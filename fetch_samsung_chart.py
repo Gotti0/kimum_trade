@@ -101,7 +101,12 @@ def save_to_cache(data, filename):
     except Exception as e:
         logger.error(f"Failed to save cache file {filepath}: {e}")
 
-def process_date(token, stk_cd, target_date):
+
+def get_stock_data(token, stk_cd, target_date):
+    """
+    Fetches minute chart data and extracts specific time points.
+    Returns a dictionary with extracted data or None on failure.
+    """
     logger.info(f"Fetching minute chart for {stk_cd} on {target_date}...")
     data = fetch_minute_chart(token, stk_cd, target_date)
     
@@ -117,11 +122,6 @@ def process_date(token, stk_cd, target_date):
             chart_data.sort(key=lambda x: x['cntr_tm'])
             
             # Times to extract
-            # 09:17 -> Open Price (open_pric)
-            # 09:18 -> Close Price (cur_prc)
-            # 09:19 -> Close Price (cur_prc)
-            # 09:20 -> Close Price (cur_prc)
-            
             target_times = {
                 "091700": "open_pric",
                 "091800": "cur_prc",
@@ -133,12 +133,34 @@ def process_date(token, stk_cd, target_date):
             
             for item in chart_data:
                 time_str = item['cntr_tm'][-6:] # Extract HHMMSS
-                if time_str in target_times:
+                
+                # Special handling for 091700 to get both Open and Close
+                if time_str == "091700":
+                    open_val = item.get("open_pric")
+                    close_val = item.get("cur_prc")
+                    
+                    label = f"{time_str[:2]}:{time_str[2:4]}"
+                    
+                    extracted_data["091700_OPEN"] = {
+                        "time": label,
+                        "type": "Open",
+                        "value": open_val,
+                        "raw_field": "open_pric"
+                    }
+                    extracted_data["091700_CLOSE"] = {
+                        "time": label,
+                        "type": "Close",
+                        "value": close_val,
+                        "raw_field": "cur_prc"
+                    }
+                    logger.info(f"Found {label} (Open): {open_val}, (Close): {close_val}")
+
+                elif time_str in target_times:
                     field = target_times[time_str]
                     value = item.get(field)
                     
                     label = f"{time_str[:2]}:{time_str[2:4]}"
-                    type_label = "Open" if field == "open_pric" else "Close"
+                    type_label = "Close" # All others are Close
                     
                     logger.info(f"Found {label} ({type_label}): {value}")
                     
@@ -151,9 +173,16 @@ def process_date(token, stk_cd, target_date):
             
             # Save extracted data
             save_to_cache(extracted_data, f"{stk_cd}_{target_date}_extracted.json")
+            return extracted_data
                 
         except Exception as e:
             logger.error(f"Error processing data for {target_date}: {e}")
+            return None
+    return None
+
+def process_date(token, stk_cd, target_date):
+    # Wrapper for backward compatibility or direct usage, just calls get_stock_data
+    get_stock_data(token, stk_cd, target_date)
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch minute chart data from Kiwoom API.")
