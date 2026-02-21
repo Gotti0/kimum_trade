@@ -11,10 +11,12 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.logic.calculator import calculate_stop_loss_and_atr
+from backend.pipeline_router import router as pipeline_router
 
 STOCK_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "stock_map.json")
 
 app = FastAPI(title="Loss Cut Simulator Backend API")
+app.include_router(pipeline_router)
 
 # Configure CORS for React Client integration
 app.add_middleware(
@@ -83,4 +85,4 @@ async def update_stock_map(entry: StockMapEntry):
 if __name__ == "__main__":
     import uvicorn
     # Run the server on port 8000
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

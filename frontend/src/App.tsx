@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap } from 'lucide-react';
 import { parseMiraeAssetCSV, parseMiraeAssetText } from './utils/csvParser';
 import type { SimulationResult, StockPosition } from './types';
 import axios from 'axios';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import PipelinePanel from './components/PipelinePanel';
 
 // 포트폴리오 유형별 색상
 const ASSET_COLORS: Record<string, string> = {
@@ -17,18 +18,19 @@ const ASSET_COLORS: Record<string, string> = {
   '기타': '#94a3b8',
 };
 
-function PortfolioChart({ results }: { results: SimulationResult[] }) {
+function PortfolioChart({ results, usdToKrw = 1400 }: { results: SimulationResult[]; usdToKrw?: number }) {
   const chartData = useMemo(() => {
     const byType: Record<string, number> = {};
     results.forEach(r => {
       const type = r.assetType || '기타';
-      const eval$ = r.evalAmount || r.averagePrice * r.quantity;
-      byType[type] = (byType[type] || 0) + eval$;
+      const rawEval = r.evalAmount || r.averagePrice * r.quantity;
+      const evalKRW = r.currency === 'USD' ? rawEval * usdToKrw : rawEval;
+      byType[type] = (byType[type] || 0) + evalKRW;
     });
     return Object.entries(byType)
       .map(([name, value]) => ({ name, value: Math.round(value) }))
       .sort((a, b) => b.value - a.value);
-  }, [results]);
+  }, [results, usdToKrw]);
 
   const total = chartData.reduce((s, d) => s + d.value, 0);
 
@@ -123,16 +125,17 @@ function App() {
   const [results, setResults] = useState<SimulationResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline'>('simulator');
   const [promptCopied, setPromptCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [stockMap, setStockMap] = useState<Record<string, string>>({});
+  const [usdToKrw, setUsdToKrw] = useState(1400);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 앱 시작 시 stock_map.json 로드
   useEffect(() => {
-    axios.get('http://localhost:8000/api/stock-map')
+    axios.get('http://localhost:8001/api/stock-map')
       .then(res => setStockMap(res.data || {}))
       .catch(() => console.warn('stock-map 로드 실패, 빈 맵으로 진행'));
   }, []);
@@ -147,20 +150,21 @@ function App() {
 
     // 평가금액 합산으로 총 자본금 자동 갱신 (달러 자산은 환율 반영)
     const hasUsd = parsedPositions.some(pos => pos.currency === 'USD');
-    let usdToKrw = 1400; // fallback
+    let fetchedRate = 1400; // fallback
     if (hasUsd) {
       try {
         const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=KRW');
         const data = await res.json();
-        usdToKrw = data.rates?.KRW || 1400;
+        fetchedRate = data.rates?.KRW || 1400;
       } catch {
         console.warn('환율 API 호출 실패, 기본값 1400원 적용');
       }
     }
+    setUsdToKrw(fetchedRate);
 
     const totalEval = parsedPositions.reduce((sum, pos) => {
       const evalAmt = pos.evalAmount || 0;
-      return sum + (pos.currency === 'USD' ? evalAmt * usdToKrw : evalAmt);
+      return sum + (pos.currency === 'USD' ? evalAmt * fetchedRate : evalAmt);
     }, 0);
 
     if (totalEval > 0) {
@@ -260,7 +264,7 @@ function App() {
         return;
       }
 
-      const response = await axios.post('http://localhost:8000/api/simulate', {
+      const response = await axios.post('http://localhost:8001/api/simulate', {
         capital,
         riskPercentage,
         atrMultiplier,
@@ -401,6 +405,16 @@ ${excludedSummary}
           >
             <PieChartIcon className="w-4 h-4" />
             포트폴리오 분석
+          </button>
+          <button
+            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'pipeline'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            onClick={() => setActiveTab('pipeline')}
+          >
+            <Zap className="w-4 h-4" />
+            파이프라인
           </button>
         </div>
 
@@ -577,7 +591,7 @@ ${excludedSummary}
                                 onBlur={(e) => {
                                   const val = e.target.value.trim();
                                   if (val) {
-                                    axios.post('http://localhost:8000/api/stock-map/update', {
+                                    axios.post('http://localhost:8001/api/stock-map/update', {
                                       name: row.name, ticker: val
                                     }).then(() => {
                                       setStockMap(prev => ({ ...prev, [row.name]: val }));
@@ -665,7 +679,12 @@ ${excludedSummary}
 
         {/* Tab Content: Portfolio */}
         {activeTab === 'portfolio' && (
-          <PortfolioChart results={results} />
+          <PortfolioChart results={results} usdToKrw={usdToKrw} />
+        )}
+
+        {/* Tab Content: Pipeline */}
+        {activeTab === 'pipeline' && (
+          <PipelinePanel />
         )}
 
       </div>
