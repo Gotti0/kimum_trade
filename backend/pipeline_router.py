@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import glob
+import requests as http_requests
 from collections import deque
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -14,8 +15,8 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 # ── Project paths ──
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VPANDA_PYTHON = os.path.join(PROJECT_ROOT, "vpanda", "Scripts", "python.exe")
-VENV_PYTHON = os.path.join(PROJECT_ROOT, "venv", "Scripts", "python.exe")
 DOCS_DIR = os.path.join(PROJECT_ROOT, "docs")
+BRIDGE_SERVER_URL = "http://localhost:8000"
 
 # ── Process manager ──
 class ProcessManager:
@@ -115,24 +116,16 @@ async def list_excel_files():
     return {"files": files}
 
 
-@router.post("/bridge-server/start")
-async def start_bridge_server():
-    """Start the Daishin 32-bit bridge server (uses venv, 32-bit python)."""
-    script = os.path.join(PROJECT_ROOT, "bridge_servers", "daishin", "bridge_server.py")
-    if not os.path.isfile(script):
-        raise HTTPException(status_code=404, detail="bridge_server.py not found")
-    
-    cmd = [VENV_PYTHON, script]
-    ok = pm.start("bridge-server", cmd)
-    if not ok:
-        return {"message": "Bridge Server is already running", "status": "running"}
-    return {"message": "Bridge Server started", "status": "started"}
-
-
-@router.post("/bridge-server/stop")
-async def stop_bridge_server():
-    ok = pm.stop("bridge-server")
-    return {"stopped": ok}
+@router.get("/bridge-server/health")
+async def check_bridge_server():
+    """Check if the Daishin bridge server is reachable on port 8000."""
+    try:
+        r = http_requests.get(f"{BRIDGE_SERVER_URL}/docs", timeout=2)
+        return {"status": "connected", "statusCode": r.status_code}
+    except http_requests.exceptions.ConnectionError:
+        return {"status": "disconnected"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.post("/excel-fill")

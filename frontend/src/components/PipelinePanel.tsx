@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Server, FileSpreadsheet, BarChart3, Play, Square, ChevronDown, Terminal } from 'lucide-react';
+import { Server, FileSpreadsheet, BarChart3, Play, Square, ChevronDown, Terminal, Wifi, WifiOff } from 'lucide-react';
 import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
@@ -14,18 +14,23 @@ interface PipelineStatus {
 
 export default function PipelinePanel() {
     const [pipelines, setPipelines] = useState<PipelineStatus[]>([]);
+    const [bridgeConnected, setBridgeConnected] = useState<boolean | null>(null);
     const [excelFiles, setExcelFiles] = useState<string[]>([]);
     const [selectedFile, setSelectedFile] = useState('');
     const [stockCode, setStockCode] = useState('A005930');
     const [activeLog, setActiveLog] = useState<string | null>(null);
     const logRef = useRef<HTMLDivElement>(null);
 
-    // Status polling
+    // Status polling (pipelines + bridge health)
     useEffect(() => {
-        const fetchStatus = () =>
+        const fetchAll = () => {
             axios.get(`${API}/status`).then(r => setPipelines(r.data.pipelines)).catch(() => { });
-        fetchStatus();
-        const id = setInterval(fetchStatus, 2000);
+            axios.get(`${API}/bridge-server/health`)
+                .then(r => setBridgeConnected(r.data.status === 'connected'))
+                .catch(() => setBridgeConnected(false));
+        };
+        fetchAll();
+        const id = setInterval(fetchAll, 3000);
         return () => clearInterval(id);
     }, []);
 
@@ -49,8 +54,6 @@ export default function PipelinePanel() {
         [pipelines]
     );
 
-    const startBridge = () => axios.post(`${API}/bridge-server/start`).catch(() => { });
-    const stopBridge = () => axios.post(`${API}/bridge-server/stop`).catch(() => { });
     const startExcelFill = () =>
         selectedFile && axios.post(`${API}/excel-fill`, { filename: selectedFile }).catch(() => { });
     const startFetchChart = () =>
@@ -73,58 +76,50 @@ export default function PipelinePanel() {
         );
     };
 
-    const bridgeStatus = getStatus('bridge-server');
     const excelStatus = getStatus('excel-fill');
     const fetchStatus = getStatus('fetch-chart');
-
     const activePipeline = activeLog ? getStatus(activeLog) : null;
 
     return (
         <div className="space-y-6">
-            {/* Pipeline Cards Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-
-                {/* Bridge Server */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-2">
-                            <div className="w-9 h-9 rounded-lg bg-violet-100 flex items-center justify-center">
-                                <Server className="w-5 h-5 text-violet-600" />
-                            </div>
-                            <div>
-                                <h3 className="font-semibold text-gray-800 text-sm">Bridge Server</h3>
-                                <p className="text-xs text-gray-400">Daishin 32-bit API</p>
-                            </div>
-                        </div>
-                        <StatusBadge s={bridgeStatus} />
+            {/* Bridge Server Monitor Banner */}
+            <div className={`rounded-xl border-2 p-4 flex items-center justify-between transition-all ${bridgeConnected === null ? 'border-gray-200 bg-gray-50' :
+                    bridgeConnected ? 'border-emerald-200 bg-emerald-50' : 'border-orange-200 bg-orange-50'
+                }`}>
+                <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${bridgeConnected ? 'bg-emerald-100' : 'bg-orange-100'
+                        }`}>
+                        {bridgeConnected
+                            ? <Wifi className="w-5 h-5 text-emerald-600" />
+                            : <WifiOff className="w-5 h-5 text-orange-500" />
+                        }
                     </div>
-                    <p className="text-xs text-gray-500 mb-4 flex-1">
-                        Daishin COM 객체를 사용하는 32-bit 브릿지 서버입니다. Excel Fill 및 Data Fetch 실행 전에 먼저 시작해야 합니다.
-                    </p>
-                    <div className="flex gap-2">
-                        <button
-                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                            onClick={startBridge}
-                            disabled={bridgeStatus.status === 'running'}
-                        >
-                            <Play className="w-3.5 h-3.5" /> 시작
-                        </button>
-                        <button
-                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-                            onClick={stopBridge}
-                            disabled={bridgeStatus.status !== 'running'}
-                        >
-                            <Square className="w-3.5 h-3.5" /> 중지
-                        </button>
-                        <button
-                            className="flex items-center justify-center px-2 py-2 rounded-lg text-sm bg-gray-50 text-gray-500 hover:bg-gray-100 transition-all"
-                            onClick={() => setActiveLog(activeLog === 'bridge-server' ? null : 'bridge-server')}
-                            title="로그 보기"
-                        >
-                            <Terminal className="w-4 h-4" />
-                        </button>
+                    <div>
+                        <h3 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
+                            Daishin Bridge Server
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${bridgeConnected === null ? 'bg-gray-200 text-gray-500' :
+                                    bridgeConnected ? 'bg-emerald-200 text-emerald-700' : 'bg-orange-200 text-orange-700'
+                                }`}>
+                                {bridgeConnected === null ? '확인 중...'
+                                    : bridgeConnected
+                                        ? <><span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" /> 연결됨</>
+                                        : '연결 안 됨'
+                                }
+                            </span>
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                            {bridgeConnected
+                                ? 'localhost:8000에서 정상 작동 중입니다.'
+                                : '관리자 권한으로 run_daishin_excel_fill.bat 또는 run_daishin_pipeline.bat을 실행해 주세요.'
+                            }
+                        </p>
                     </div>
                 </div>
+                <Server className={`w-6 h-6 ${bridgeConnected ? 'text-emerald-400' : 'text-orange-300'}`} />
+            </div>
+
+            {/* Pipeline Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
                 {/* Excel Fill */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 flex flex-col">
@@ -158,7 +153,8 @@ export default function PipelinePanel() {
                         <button
                             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                             onClick={startExcelFill}
-                            disabled={excelStatus.status === 'running' || !selectedFile}
+                            disabled={excelStatus.status === 'running' || !selectedFile || !bridgeConnected}
+                            title={!bridgeConnected ? 'Bridge Server가 연결되어야 합니다' : ''}
                         >
                             <Play className="w-3.5 h-3.5" /> 실행
                         </button>
@@ -207,7 +203,8 @@ export default function PipelinePanel() {
                         <button
                             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                             onClick={startFetchChart}
-                            disabled={fetchStatus.status === 'running' || !stockCode}
+                            disabled={fetchStatus.status === 'running' || !stockCode || !bridgeConnected}
+                            title={!bridgeConnected ? 'Bridge Server가 연결되어야 합니다' : ''}
                         >
                             <Play className="w-3.5 h-3.5" /> 실행
                         </button>
@@ -259,3 +256,4 @@ export default function PipelinePanel() {
         </div>
     );
 }
+
