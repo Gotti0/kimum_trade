@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 # Ensure we can import from current directory
 sys.path.append(os.getcwd())
 try:
-    from fetch_samsung_chart import get_stock_data, get_access_token
-    from stock_mapper import get_code_by_name
+    from scripts.exploration.fetch_samsung_chart import get_stock_data, get_access_token
+    from utils.stock_mapper import get_code_by_name
 except ImportError as e:
     print(f"Error importing modules: {e}")
     sys.exit(1)

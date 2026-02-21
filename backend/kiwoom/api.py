@@ -63,7 +63,7 @@ def _refresh_stock_map():
     """stock_mapper.py의 update 로직을 호출하여 캐시를 갱신"""
     global _stock_map_cache
     try:
-        from stock_mapper import get_access_token, update_stock_map
+        from utils.stock_mapper import get_access_token, update_stock_map
         print("[StockMapper] Cache miss — auto-refreshing stock map...")
         token = get_access_token()
         if token:

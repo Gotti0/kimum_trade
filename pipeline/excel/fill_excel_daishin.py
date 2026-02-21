@@ -10,29 +10,15 @@ from datetime import datetime
 # Import stock mapper
 sys.path.append(os.getcwd())
 try:
-    from stock_mapper import get_code_by_name
+    from utils.stock_mapper import get_code_by_name
 except ImportError as e:
     print(f"Error importing modules: {e}. Please ensure stock_mapper.py exists in the current directory.")
     sys.exit(1)
 
-# Configure logging
-LOG_DIR = "logs"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
-logging.basicConfig(
-    filename=os.path.join(LOG_DIR, "fill_excel_daishin.log"),
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    encoding='utf-8'
-)
-logger = logging.getLogger("fill_excel_daishin")
-logger.addHandler(logging.StreamHandler())
+from utils.config import get_logger
+from pipeline.excel.daishin_api_client import fetch_daishin_data
 
-# Constants
-BRIDGE_URL = "http://localhost:8000/api/dostk/chart"
-CACHE_DIR = "cache_daishin"
-# Daishin returns maximum ~18.5k minutes per stock, taking ~10-15 seconds. Let's just request max to ensure we get 1-year ago data.
-MAX_MINUTE_COUNT = 180000 
+logger = get_logger("fill_excel_daishin", "fill_excel_daishin.log")
 
 def parse_date(date_str, current_year):
     """
@@ -61,52 +47,7 @@ def clean_price(value):
     except Exception:
         return value
 
-def fetch_daishin_data(stk_cd):
-    """Fetch raw JSON chart data from the Daishin 32-bit bridge server or local cache."""
-    if not os.path.exists(CACHE_DIR):
-        os.makedirs(CACHE_DIR)
-        
-    cache_file = os.path.join(CACHE_DIR, f"{stk_cd}_raw.json")
-    if os.path.exists(cache_file):
-        logger.info(f"Loading {stk_cd} data from local cache: {cache_file}")
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load cache {cache_file}: {e}")
-            # Fall through to download if cache loading fails
-            
-    logger.info(f"Downloading historical minute data for {stk_cd} from Bridge Server...")
-    try:
-        response = requests.get(BRIDGE_URL, params={"stk_cd": stk_cd, "count": MAX_MINUTE_COUNT}, timeout=300)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("status") == "success":
-                data = result.get("data", [])
-                logger.info(f"Successfully received {len(data)} records for {stk_cd}.")
-                
-                # Save to cache
-                try:
-                    with open(cache_file, 'w', encoding='utf-8') as f:
-                        json.dump(data, f)
-                except Exception as e:
-                     logger.warning(f"Could not save cache file {cache_file}: {e}")
-                     
-                return data
-            else:
-                logger.error(f"API Error: {result.get('detail')}")
-                return None
-        else:
-            logger.error(f"HTTP Error {response.status_code}: {response.text}")
-            return None
-            
-    except requests.exceptions.ConnectionError:
-        logger.error("Connection Error: Is the 32-bit bridge_server.py running on port 8000?")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return None
+
 
 def extract_time_points(minute_data, target_date_int):
     """

@@ -1,7 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 import logging
-from daishin_agent import DaishinAgent
+import sys
+import os
+
+# Add project root to path so we can import pipeline.agents
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pipeline.agents.daishin_agent import DaishinAgent
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
