@@ -121,46 +121,33 @@ def get_stock_data(token, stk_cd, target_date):
             # Sort by time to be sure
             chart_data.sort(key=lambda x: x['cntr_tm'])
             
+            # Get the true market open price from the first record
+            market_open_val = chart_data[0].get("open_pric")
+            extracted_data["MARKET_OPEN"] = {
+                "time": "09:00",
+                "type": "Open",
+                "value": market_open_val,
+                "raw_field": "open_pric"
+            }
+            logger.info(f"Found Market Open: {market_open_val}")
+            
             # Times to extract
             target_times = {
-                "091700": "open_pric",
+                "091700": "cur_prc",
                 "091800": "cur_prc",
                 "091900": "cur_prc",
                 "092000": "cur_prc"
             }
             
-            extracted_data = {}
-            
             for item in chart_data:
                 time_str = item['cntr_tm'][-6:] # Extract HHMMSS
                 
-                # Special handling for 091700 to get both Open and Close
-                if time_str == "091700":
-                    open_val = item.get("open_pric")
-                    close_val = item.get("cur_prc")
-                    
-                    label = f"{time_str[:2]}:{time_str[2:4]}"
-                    
-                    extracted_data["091700_OPEN"] = {
-                        "time": label,
-                        "type": "Open",
-                        "value": open_val,
-                        "raw_field": "open_pric"
-                    }
-                    extracted_data["091700_CLOSE"] = {
-                        "time": label,
-                        "type": "Close",
-                        "value": close_val,
-                        "raw_field": "cur_prc"
-                    }
-                    logger.info(f"Found {label} (Open): {open_val}, (Close): {close_val}")
-
-                elif time_str in target_times:
+                if time_str in target_times:
                     field = target_times[time_str]
                     value = item.get(field)
                     
                     label = f"{time_str[:2]}:{time_str[2:4]}"
-                    type_label = "Close" # All others are Close
+                    type_label = "Close"
                     
                     logger.info(f"Found {label} ({type_label}): {value}")
                     

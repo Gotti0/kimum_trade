@@ -125,11 +125,14 @@ def extract_time_points(minute_data, target_date_int):
          logger.warning(f"No data available for date {target_date_int}")
          return extracted
          
+    # 시간 순으로 정렬하여 가장 첫 데이터의 시가를 당일 장개시 시가로 사용
+    day_records = sorted(day_records, key=lambda x: int(x['time']))
+    extracted["시가"] = clean_price(day_records[0]["open"])
+
     for row in day_records:
         time_val = int(row['time'])
         
         if time_val == 917:
-            extracted["시가"] = clean_price(row["open"])
             extracted["17분"] = clean_price(row["close"])
         elif time_val == 918:
             extracted["18분"] = clean_price(row["close"])
