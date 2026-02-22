@@ -13,6 +13,7 @@ import os
 import logging
 import certifi
 import requests
+import time
 from dotenv import load_dotenv
 
 # .env 파일 로드 (프로젝트 루트 기준)
@@ -35,6 +36,37 @@ class TopThemeFinder:
         self.appkey = appkey or os.getenv("appkey", "")
         self.secretkey = secretkey or os.getenv("secretkey", "")
         self._token: str = ""
+        self.max_retries = 5
+        self.base_delay = 1.0  # 초
+
+    # ── 재시도 헬퍼 ────────────────────────────────────────
+
+    def _request_with_retry(self, url: str, headers: dict, json_payload: dict) -> requests.Response:
+        """지수 백오프를 적용하여 POST 요청을 수행합니다."""
+        for attempt in range(self.max_retries):
+            try:
+                resp = requests.post(url, headers=headers, json=json_payload, verify=certifi.where(), timeout=15)
+                
+                # 429 (Too Many Requests) 또는 5xx (Server Error) 시 재시도
+                if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                    delay = self.base_delay * (2 ** attempt)
+                    logger.warning("API 호출 실패 (%d): %s. %d초 후 재시도... (%d/%d)", 
+                                   resp.status_code, resp.text[:100], int(delay), attempt + 1, self.max_retries)
+                    time.sleep(delay)
+                    continue
+                
+                resp.raise_for_status()
+                return resp
+                
+            except (requests.exceptions.RequestException, Exception) as e:
+                if attempt == self.max_retries - 1:
+                    raise
+                delay = self.base_delay * (2 ** attempt)
+                logger.warning("네트워크/예외 발생: %s. %d초 후 재시도... (%d/%d)", 
+                               str(e), int(delay), attempt + 1, self.max_retries)
+                time.sleep(delay)
+                
+        raise RuntimeError("최대 재시도 횟수를 초과했습니다.")
 
     # ── 토큰 발급 ──────────────────────────────────────────
 
@@ -54,9 +86,7 @@ class TopThemeFinder:
             "secretkey": self.secretkey,
         }
 
-        resp = requests.post(url, headers=headers, json=payload,
-                             verify=certifi.where(), timeout=10)
-        resp.raise_for_status()
+        resp = self._request_with_retry(url, headers, payload)
         data = resp.json()
 
         if data.get("return_code") != 0:
@@ -94,9 +124,7 @@ class TopThemeFinder:
             "stex_tp": "1",            # KRX
         }
 
-        resp = requests.post(url, headers=headers, json=payload,
-                             verify=certifi.where(), timeout=10)
-        resp.raise_for_status()
+        resp = self._request_with_retry(url, headers, payload)
         data = resp.json()
 
         if data.get("return_code") != 0:
@@ -152,9 +180,7 @@ class TopThemeFinder:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = requests.post(url, headers=headers, json=payload,
-                                 verify=certifi.where(), timeout=10)
-            resp.raise_for_status()
+            resp = self._request_with_retry(url, headers, payload)
             data = resp.json()
 
             if data.get("return_code") != 0:
@@ -214,9 +240,7 @@ class TopThemeFinder:
         }
         payload = {"stk_cd": stk_cd}
 
-        resp = requests.post(url, headers=headers, json=payload,
-                             verify=certifi.where(), timeout=10)
-        resp.raise_for_status()
+        resp = self._request_with_retry(url, headers, payload)
         data = resp.json()
 
         if data.get("return_code") != 0:
@@ -262,9 +286,7 @@ class TopThemeFinder:
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
 
-            resp = requests.post(url, headers=headers, json=payload,
-                                 verify=certifi.where(), timeout=10)
-            resp.raise_for_status()
+            resp = self._request_with_retry(url, headers, payload)
             data = resp.json()
 
             if data.get("return_code") != 0:
@@ -284,6 +306,62 @@ class TopThemeFinder:
         all_bars.sort(key=lambda x: x.get("cntr_tm", ""))
 
         logger.info("분봉 [%s / %s] %d건 조회됨", stk_cd, base_dt, len(all_bars))
+        return all_bars
+
+    # ── ka10081: 주식일봉차트조회 ─────────────────────────────
+
+    def get_daily_chart(self, stk_cd: str, base_dt: str) -> list[dict]:
+        """종목의 일봉 차트 데이터를 조회합니다.
+
+        Args:
+            stk_cd: 종목코드
+            base_dt: 기준일자 (YYYYMMDD)
+
+        Returns:
+            [{dt, cur_prc, open_pric, high_pric, low_pric, trde_qty, ...}, ...]
+            날짜순 정렬 (오래된 → 최신)
+        """
+        token = self._get_token()
+        url = f"{self.domain}/api/dostk/chart"
+        headers = {
+            "api-id": "ka10081",
+            "authorization": f"Bearer {token}",
+            "Content-Type": "application/json;charset=UTF-8",
+        }
+        payload = {
+            "stk_cd": stk_cd,
+            "base_dt": base_dt,
+            "upd_stkpc_tp": "1",  # 수정주가 반영
+        }
+
+        all_bars = []
+        cont_yn = ""
+        next_key = ""
+
+        for _ in range(5):  # 약 500~600일 분량
+            if cont_yn == "Y":
+                headers["cont-yn"] = "Y"
+                headers["next-key"] = next_key
+
+            resp = self._request_with_retry(url, headers, payload)
+            data = resp.json()
+
+            if data.get("return_code") != 0:
+                raise RuntimeError(f"ka10081 실패: {data.get('return_msg')}")
+
+            bars = data.get("stk_dt_pole_chart_qry", [])
+            if not bars:
+                break
+            all_bars.extend(bars)
+
+            cont_yn = resp.headers.get("cont-yn", "N")
+            next_key = resp.headers.get("next-key", "")
+            if cont_yn != "Y":
+                break
+
+        # 날짜순 정렬
+        all_bars.sort(key=lambda x: x.get("dt", ""))
+        logger.info("일봉 [%s] %d건 조회됨", stk_cd, len(all_bars))
         return all_bars
 
 # ── 직접 실행 시 테스트 ────────────────────────────────────

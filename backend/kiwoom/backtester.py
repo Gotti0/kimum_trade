@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 # 분봉 캐시 디렉토리
 _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CACHE_DIR = os.path.join(_project_root, "cache", "minute_charts")
+DAILY_CACHE_DIR = os.path.join(_project_root, "cache", "daily_charts")
 os.makedirs(CACHE_DIR, exist_ok=True)
+os.makedirs(DAILY_CACHE_DIR, exist_ok=True)
 
 # API 호출 간 딜레이 (초) — 레이트 리밋 방지
 API_DELAY = 0.35
@@ -37,6 +39,9 @@ class ThemeBacktester:
         self.sell_engine = SellStrategyEngine()
         self.initial_capital = initial_capital
         self._trading_days_cache: list[str] = []  # YYYYMMDD 형식
+        self._universe_themes: list[dict] = []
+        self._universe_stocks: dict[str, list[dict]] = {} # {theme_cd: [stocks]}
+        self._daily_bars_cache: dict[str, list[dict]] = {} # {stk_cd: [bars]}
 
     # ── 개장일 판별 ────────────────────────────────────────
 
@@ -143,6 +148,106 @@ class ThemeBacktester:
 
         return bars
 
+    def _get_daily_chart_cached(self, stk_cd: str) -> list[dict]:
+        """일봉 데이터를 캐시에서 가져오거나, 없으면 API 호출 후 캐싱."""
+        if stk_cd in self._daily_bars_cache:
+            return self._daily_bars_cache[stk_cd]
+
+        cache_file = os.path.join(DAILY_CACHE_DIR, f"{stk_cd}.json")
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                bars = json.load(f)
+                self._daily_bars_cache[stk_cd] = bars
+                return bars
+
+        logger.info("일봉 캐시 미스: %s → API 호출", stk_cd)
+        time.sleep(API_DELAY)
+        bars = self.finder.get_daily_chart(stk_cd, datetime.now().strftime("%Y%m%d"))
+
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(bars, f, ensure_ascii=False)
+
+        self._daily_bars_cache[stk_cd] = bars
+        return bars
+
+    # ── 유니버스 구축 및 과거 순위 계산 ────────────────────
+
+    def _build_history_universe(self):
+        """현재 기준 상위 테마/종목 유니버스를 구축하고 일봉 데이터를 미리 수집합니다."""
+        logger.info("백테스트 유니버스 구축 중 (상위 100개 테마)...")
+        self._universe_themes = self.finder.get_top_themes(days_ago=1, top_n=100)
+
+        for theme in self._universe_themes:
+            cd = theme.get("thema_grp_cd")
+            if not cd: continue
+            time.sleep(API_DELAY)
+            stocks = self.finder.get_theme_stocks(cd, days_ago=1)
+            self._universe_stocks[cd] = stocks
+
+            # 각 종목 일봉 캐싱
+            for stk in stocks:
+                stk_cd = stk.get("stk_cd")
+                if stk_cd:
+                    self._get_daily_chart_cached(stk_cd)
+
+    def _get_historical_top_theme(self, target_date: str) -> dict:
+        """특정 날짜(target_date) 기준의 1등 테마와 대장주를 일봉 데이터로 계산합니다."""
+        results = []
+
+        for theme in self._universe_themes:
+            theme_cd = theme.get("thema_grp_cd")
+            theme_nm = theme.get("thema_nm")
+            stocks = self._universe_stocks.get(theme_cd, [])
+
+            stock_returns = []
+            for stk in stocks:
+                stk_cd = stk.get("stk_cd")
+                stk_nm = stk.get("stk_nm")
+                bars = self._get_daily_chart_cached(stk_cd)
+
+                # target_date의 성과 찾기
+                # target_date 당일 등락률을 계산 (target_date 종가 vs 전일 종가)
+                # 미래 참조 방지를 위해 target_date 이전 데이터만 사용
+                target_idx = -1
+                for i, bar in enumerate(bars):
+                    if bar.get("dt") == target_date:
+                        target_idx = i
+                        break
+
+                if target_idx > 0:
+                    prev_close = _parse_price(bars[target_idx-1].get("cur_prc", "0"))
+                    curr_close = _parse_price(bars[target_idx].get("cur_prc", "0"))
+                    if prev_close > 0:
+                        ret = (curr_close - prev_close) / prev_close * 100
+                        stock_returns.append({
+                            "stk_cd": stk_cd,
+                            "stk_nm": stk_nm,
+                            "ret": ret
+                        })
+
+            if stock_returns:
+                # 테마 내 평균 수익률 계산
+                avg_ret = sum(s["ret"] for s in stock_returns) / len(stock_returns)
+                # 대장주 선정 (수익률 1위)
+                stock_returns.sort(key=lambda x: x["ret"], reverse=True)
+                results.append({
+                    "theme": theme,
+                    "avg_ret": avg_ret,
+                    "top_stock": stock_returns[0]
+                })
+
+        if not results:
+            return {}
+
+        # 1등 테마 선정
+        results.sort(key=lambda x: x["avg_ret"], reverse=True)
+        top = results[0]
+
+        return {
+            "theme": top["theme"],
+            "stocks": [top["top_stock"]]  # 대장주 1개만 반환
+        }
+
     # ── 메인 백테스팅 루프 ─────────────────────────────────
 
     def run(self, start_days_ago: int = 99) -> dict:
@@ -180,12 +285,19 @@ class ThemeBacktester:
         logger.info("-" * len(header))
 
         for day_offset in range(start_days_ago, 1, -1):
-            # 1단계: 1등 테마 조회
+            buy_date = self._get_trading_day_n_ago(day_offset)
+            if not buy_date:
+                logger.info("Day -%d: 매수일 특정 불가, 건너뜀", day_offset)
+                continue
+
+            # 1단계: 과거 시점(buy_date) 기준 1등 테마 및 대장주 계산 (미래 참조 차단)
             try:
-                time.sleep(API_DELAY)
-                theme_result = self.finder.find_top_theme_with_stocks(days_ago=day_offset)
+                if not self._universe_themes:
+                    self._build_history_universe()
+                
+                theme_result = self._get_historical_top_theme(buy_date)
             except Exception as e:
-                logger.warning("Day -%d: 테마 조회 실패 (%s), 건너뜀", day_offset, e)
+                logger.warning("Day -%d: 테마 계산 실패 (%s), 건너뜀", day_offset, e)
                 continue
 
             theme = theme_result.get("theme", {})
@@ -198,17 +310,17 @@ class ThemeBacktester:
             theme_name = theme.get("thema_nm", "?")
 
             # 2단계: 매수일/매도일 특정
-            buy_date = self._get_trading_day_n_ago(day_offset)
-            if not buy_date:
-                logger.info("Day -%d: 매수일 특정 불가, 건너뜀", day_offset)
-                continue
-
             sell_date = self._next_trading_day(buy_date)
             if not sell_date:
                 logger.info("Day -%d: 매도일 특정 불가, 건너뜀", day_offset)
                 continue
 
-            # 3단계: 각 종목 처리 (균등 분배)
+            # 3단계: 1위 종목 선정 결과 로그
+            stk_top = stocks[0]
+            logger.info("Day -%d: 테마 [%s] 내 대장주 [%s] 선정 (과거시점 수익률: %.2f%%)",
+                         day_offset, theme_name, stk_top.get("stk_nm"), stk_top.get("ret", 0))
+
+            # 4단계: 각 종목 처리 (현재 대장주 1개)
             day_returns = []
             for stk in stocks:
                 stk_cd = stk.get("stk_cd", "")
