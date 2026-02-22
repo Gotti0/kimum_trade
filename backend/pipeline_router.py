@@ -195,3 +195,32 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     if not ok:
         return {"message": "Kiwoom Backtest is already running", "status": "running"}
     return {"message": "Kiwoom Backtest started", "status": "started"}
+
+
+class ScreenerRequest(BaseModel):
+    top_n: int = 30
+
+
+@router.post("/screener")
+async def run_screener(req: ScreenerRequest):
+    """Run Alpha Filter Screener."""
+    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.alpha_screener", "--top_n", str(req.top_n)]
+    ok = pm.start("alpha-screener", cmd)
+    if not ok:
+        return {"message": "Screener is already running", "status": "running"}
+    return {"message": "Alpha Screener started", "status": "started"}
+
+
+@router.get("/screener/result")
+async def get_screener_result():
+    """Return the latest screener result from JSON file."""
+    result_file = os.path.join(PROJECT_ROOT, "cache", "screener", "latest.json")
+    if not os.path.isfile(result_file):
+        return {"status": "no_data", "data": None}
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            data = __import__('json').load(f)
+        return {"status": "ok", "data": data}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
