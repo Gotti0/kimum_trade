@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap, TrendingUp } from 'lucide-react';
 import { parseMiraeAssetCSV, parseMiraeAssetText } from './utils/csvParser';
 import type { SimulationResult, StockPosition } from './types';
 import axios from 'axios';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import PipelinePanel from './components/PipelinePanel';
+import BacktestPanel from './components/BacktestPanel';
 
 // 포트폴리오 유형별 색상
 const ASSET_COLORS: Record<string, string> = {
@@ -125,7 +126,7 @@ function App() {
   const [results, setResults] = useState<SimulationResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline' | 'backtest'>('simulator');
   const [promptCopied, setPromptCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [stockMap, setStockMap] = useState<Record<string, string>>({});
@@ -416,6 +417,16 @@ ${excludedSummary}
             <Zap className="w-4 h-4" />
             파이프라인
           </button>
+          <button
+            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'backtest'
+              ? 'border-blue-600 text-blue-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            onClick={() => setActiveTab('backtest')}
+          >
+            <TrendingUp className="w-4 h-4" />
+            백테스트
+          </button>
         </div>
 
         {/* Tab Content: Simulator */}
@@ -685,6 +696,11 @@ ${excludedSummary}
         {/* Tab Content: Pipeline */}
         {activeTab === 'pipeline' && (
           <PipelinePanel />
+        )}
+
+        {/* Tab Content: Backtest */}
+        {activeTab === 'backtest' && (
+          <BacktestPanel />
         )}
 
       </div>

@@ -15,10 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_price(raw: str) -> float:
-    """키움 API 가격 문자열('+12000', '-5000' 등)을 float로 변환."""
+    """키움 API 가격 문자열(예: '+12000', '-5000')을 양수 float로 변환."""
     if not raw:
         return 0.0
-    return float(str(raw).replace("+", "").replace(",", ""))
+    # 부호(+, -)와 콤마를 제거하고 절대값으로 변환
+    clean = str(raw).replace("+", "").replace("-", "").replace(",", "")
+    try:
+        return float(clean)
+    except ValueError:
+        return 0.0
 
 
 def _get_bar_at(minute_bars: list[dict], target_time: str) -> Optional[dict]:

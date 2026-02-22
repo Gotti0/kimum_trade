@@ -31,7 +31,7 @@ class ProcessManager:
             if name in self._processes and self._processes[name].poll() is None:
                 return False  # already running
             
-            merged_env = {**os.environ, **(env or {})}
+            merged_env = {**os.environ, **(env or {}), "PYTHONUTF8": "1"}
             
             try:
                 proc = subprocess.Popen(
@@ -102,6 +102,10 @@ class FetchChartRequest(BaseModel):
 
 class StopRequest(BaseModel):
     name: str
+
+class KiwoomBacktestRequest(BaseModel):
+    days: int = 99
+    capital: float = 10_000_000
 
 
 # ── Endpoints ──
@@ -174,3 +178,18 @@ async def get_pipeline_status(name: str):
 async def stop_pipeline(req: StopRequest):
     ok = pm.stop(req.name)
     return {"stopped": ok, "name": req.name}
+
+
+@router.post("/kiwoom-backtest")
+async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
+    """Run Kiwoom Theme Backtester."""
+    script = os.path.join(PROJECT_ROOT, "backend", "kiwoom", "backtester.py")
+    if not os.path.isfile(script):
+        raise HTTPException(status_code=404, detail="backtester.py not found")
+    
+    # Run as a module to avoid import errors
+    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.backtester", str(req.days), "--capital", str(req.capital)]
+    ok = pm.start("kiwoom-backtest", cmd)
+    if not ok:
+        return {"message": "Kiwoom Backtest is already running", "status": "running"}
+    return {"message": "Kiwoom Backtest started", "status": "started"}

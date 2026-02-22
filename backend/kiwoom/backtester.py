@@ -11,6 +11,7 @@ ThemeBacktester: 테마 기반 백테스팅 엔진.
 import os
 import json
 import time
+import sys
 import logging
 from datetime import datetime, timedelta
 
@@ -334,7 +335,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.StreamHandler(),
+            logging.StreamHandler(sys.stdout),
             logging.FileHandler(
                 os.path.join(_project_root, "logs",
                              f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"),
