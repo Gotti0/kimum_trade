@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, Terminal, TrendingUp, DollarSign, Calendar } from 'lucide-react';
+import { Play, Square, Terminal, TrendingUp, DollarSign, Calendar, Zap, Shield, BarChart3 } from 'lucide-react';
 import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
+
+type Strategy = 'legacy' | 'swing';
 
 interface PipelineStatus {
     name: string;
@@ -12,23 +14,43 @@ interface PipelineStatus {
     logs: string[];
 }
 
+const STRATEGY_CONFIG = {
+    legacy: {
+        label: '1일 오버나잇',
+        desc: '장마감 매수 → 익일 매도 (기존 전략)',
+        color: 'blue',
+        icon: TrendingUp,
+        pipelineName: 'kiwoom-backtest',
+    },
+    swing: {
+        label: '3~5일 스윙',
+        desc: 'ATR 트레일링 스톱 + 알파 필터 (신규 전략)',
+        color: 'violet',
+        icon: BarChart3,
+        pipelineName: 'kiwoom-backtest',
+    },
+} as const;
+
 export default function BacktestPanel() {
+    const [strategy, setStrategy] = useState<Strategy>('legacy');
     const [status, setStatus] = useState<PipelineStatus>({ name: 'kiwoom-backtest', status: 'idle', logs: [] });
     const [days, setDays] = useState(10);
     const [capital, setCapital] = useState(10000000);
     const logRef = useRef<HTMLDivElement>(null);
 
+    const cfg = STRATEGY_CONFIG[strategy];
+
     // Status polling
     useEffect(() => {
         const fetchStatus = () => {
-            axios.get(`${API}/status/kiwoom-backtest`)
+            axios.get(`${API}/status/${cfg.pipelineName}`)
                 .then(r => setStatus(r.data))
                 .catch(() => { });
         };
         fetchStatus();
         const id = setInterval(fetchStatus, 3000);
         return () => clearInterval(id);
-    }, []);
+    }, [strategy]);
 
     // Auto-scroll logs
     useEffect(() => {
@@ -36,25 +58,39 @@ export default function BacktestPanel() {
     }, [status.logs]);
 
     const startBacktest = () => {
-        axios.post(`${API}/kiwoom-backtest`, { days, capital })
+        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy })
             .catch(err => alert('실행 실패: ' + err.message));
     };
 
     const stopBacktest = () => {
-        axios.post(`${API}/stop`, { name: 'kiwoom-backtest' })
+        axios.post(`${API}/stop`, { name: cfg.pipelineName })
             .catch(() => { });
     };
+
+    const isRunning = status.status === 'running';
+    const accentMap = {
+        blue: {
+            bg: 'bg-blue-100', text: 'text-blue-600', btn: 'bg-blue-600 hover:bg-blue-700 shadow-blue-200',
+            border: 'border-blue-200', ring: 'focus:ring-blue-500', selectBg: 'bg-blue-50 border-blue-300 ring-1 ring-blue-200',
+        },
+        violet: {
+            bg: 'bg-violet-100', text: 'text-violet-600', btn: 'bg-violet-600 hover:bg-violet-700 shadow-violet-200',
+            border: 'border-violet-200', ring: 'focus:ring-violet-500', selectBg: 'bg-violet-50 border-violet-300 ring-1 ring-violet-200',
+        },
+    };
+    const accent = accentMap[cfg.color];
+    const Icon = cfg.icon;
 
     const StatusBadge = ({ s }: { s: PipelineStatus }) => {
         const colors = {
             idle: 'bg-gray-100 text-gray-600',
-            running: 'bg-blue-100 text-blue-700 animate-pulse',
+            running: `${accent.bg} ${accent.text} animate-pulse`,
             finished: s.exitCode === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700',
         };
         const labels = { idle: '대기', running: '실행 중', finished: s.exitCode === 0 ? '완료' : '오류' };
         return (
             <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${colors[s.status]}`}>
-                {s.status === 'running' && <span className="w-1.5 h-1.5 bg-blue-500 rounded-full" />}
+                {s.status === 'running' && <span className={`w-1.5 h-1.5 rounded-full ${accent.bg.replace('100', '500')}`} />}
                 {labels[s.status]}
             </span>
         );
@@ -63,19 +99,106 @@ export default function BacktestPanel() {
     return (
         <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                {/* Header */}
                 <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
-                            <TrendingUp className="w-6 h-6 text-blue-600" />
+                        <div className={`w-10 h-10 rounded-lg ${accent.bg} flex items-center justify-center transition-colors`}>
+                            <Icon className={`w-6 h-6 ${accent.text}`} />
                         </div>
                         <div>
                             <h2 className="text-xl font-bold text-gray-800">Kiwoom Theme Backtester</h2>
-                            <p className="text-sm text-gray-500">테마 선발 및 매매 전략 성과 분석</p>
+                            <p className="text-sm text-gray-500">{cfg.desc}</p>
                         </div>
                     </div>
                     <StatusBadge s={status} />
                 </div>
 
+                {/* Strategy Toggle */}
+                <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-gray-400" />
+                        전략 선택
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                        {(Object.keys(STRATEGY_CONFIG) as Strategy[]).map(key => {
+                            const c = STRATEGY_CONFIG[key];
+                            const selected = strategy === key;
+                            const StratIcon = c.icon;
+                            return (
+                                <button
+                                    key={key}
+                                    onClick={() => setStrategy(key)}
+                                    disabled={isRunning}
+                                    className={`
+                                        relative flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left
+                                        ${selected
+                                            ? accentMap[c.color].selectBg
+                                            : 'bg-white border-gray-200 hover:border-gray-300'
+                                        }
+                                        disabled:opacity-60 disabled:cursor-not-allowed
+                                    `}
+                                >
+                                    <StratIcon className={`w-5 h-5 ${selected ? accentMap[c.color].text : 'text-gray-400'}`} />
+                                    <div>
+                                        <div className={`text-sm font-bold ${selected ? accentMap[c.color].text : 'text-gray-700'}`}>
+                                            {c.label}
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-0.5">{c.desc}</div>
+                                    </div>
+                                    {selected && (
+                                        <div className={`absolute top-2 right-2 w-2 h-2 rounded-full ${accentMap[c.color].bg.replace('50', '500')}`} />
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                {/* Swing Strategy Info Card */}
+                {strategy === 'swing' && (
+                    <div className="mb-6 bg-violet-50/50 rounded-xl border border-violet-100 p-4">
+                        <div className="flex items-center gap-2 mb-3">
+                            <Shield className="w-4 h-4 text-violet-500" />
+                            <span className="text-sm font-bold text-violet-700">스윙 전략 파라미터</span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">ATR 기간</div>
+                                <div className="font-bold text-gray-800 mt-0.5">5일</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">스톱 승수</div>
+                                <div className="font-bold text-gray-800 mt-0.5">×2.5</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">최대 보유</div>
+                                <div className="font-bold text-gray-800 mt-0.5">5일</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">마찰 비용</div>
+                                <div className="font-bold text-gray-800 mt-0.5">0.345%</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">슬롯 수</div>
+                                <div className="font-bold text-gray-800 mt-0.5">10개</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">RPT</div>
+                                <div className="font-bold text-gray-800 mt-0.5">1.5%</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">RVOL 허들</div>
+                                <div className="font-bold text-gray-800 mt-0.5">≥2.5</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                                <div className="text-gray-500">이격도 캡</div>
+                                <div className="font-bold text-gray-800 mt-0.5">100~112</div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Parameters */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
@@ -87,7 +210,7 @@ export default function BacktestPanel() {
                                 type="number"
                                 min="1"
                                 max="100"
-                                className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                className={`w-full border border-gray-200 rounded-lg px-4 py-2.5 ${accent.ring} focus:ring-2 outline-none transition-all`}
                                 value={days}
                                 onChange={e => setDays(Number(e.target.value))}
                             />
@@ -102,7 +225,7 @@ export default function BacktestPanel() {
                         <div className="relative">
                             <input
                                 type="number"
-                                className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
+                                className={`w-full border border-gray-200 rounded-lg px-4 py-2.5 ${accent.ring} focus:ring-2 outline-none transition-all`}
                                 value={capital}
                                 onChange={e => setCapital(Number(e.target.value))}
                             />
@@ -111,18 +234,20 @@ export default function BacktestPanel() {
                     </div>
                 </div>
 
+                {/* Action Buttons */}
                 <div className="flex gap-3">
                     <button
-                        className="flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-200 active:scale-[0.98]"
+                        className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-white ${accent.btn} disabled:opacity-50 transition-all shadow-lg active:scale-[0.98]`}
                         onClick={startBacktest}
-                        disabled={status.status === 'running'}
+                        disabled={isRunning}
                     >
-                        <Play className="w-5 h-5" /> 백테스팅 시작
+                        <Play className="w-5 h-5" />
+                        {strategy === 'swing' ? '스윙 백테스팅 시작' : '백테스팅 시작'}
                     </button>
                     <button
                         className="flex items-center justify-center px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
                         onClick={stopBacktest}
-                        disabled={status.status !== 'running'}
+                        disabled={!isRunning}
                     >
                         <Square className="w-5 h-5" /> 중단
                     </button>
@@ -134,7 +259,9 @@ export default function BacktestPanel() {
                 <div className="flex items-center justify-between px-5 py-3 bg-gray-800/50 border-b border-gray-800">
                     <div className="flex items-center gap-2">
                         <Terminal className="w-4 h-4 text-blue-400" />
-                        <span className="text-sm font-bold text-gray-300">Execution Logs</span>
+                        <span className="text-sm font-bold text-gray-300">
+                            Execution Logs {strategy === 'swing' && <span className="text-violet-400 text-xs ml-1">[Swing]</span>}
+                        </span>
                     </div>
                     <div className="text-[10px] text-gray-500 font-mono">
                         {status.pid ? `PID: ${status.pid}` : 'IDLE'}
@@ -162,3 +289,4 @@ export default function BacktestPanel() {
         </div>
     );
 }
+

@@ -237,3 +237,243 @@ class SellStrategyEngine:
             "open_price": open_price,
             "hit_upper_limit": hit_upper_limit,
         }
+
+
+# ══════════════════════════════════════════════════════════════
+#  SwingSellStrategyEngine: 3~5일 스윙용 ATR 트레일링 스톱 매도 전략
+# ══════════════════════════════════════════════════════════════
+
+def compute_atr(daily_bars: list[dict], period: int = 5) -> Optional[float]:
+    """Modified ATR(Average True Range) 계산.
+
+    ATR = SMA(True Range, period)
+    True Range = max(High - Low, |High - Prev Close|, |Low - Prev Close|)
+
+    Args:
+        daily_bars: 과거→최신 정렬된 일봉 리스트 (최소 period+1개).
+        period: ATR 기간 (기본 5일).
+
+    Returns:
+        ATR 값 (float) 또는 데이터 부족 시 None.
+    """
+    if len(daily_bars) < period + 1:
+        return None
+
+    true_ranges = []
+    for i in range(1, len(daily_bars)):
+        high = _parse_price(daily_bars[i].get("high_pric", "0"))
+        low = _parse_price(daily_bars[i].get("low_pric", "0"))
+        prev_close = _parse_price(daily_bars[i - 1].get("cur_prc", "0"))
+
+        if high == 0 or low == 0 or prev_close == 0:
+            continue
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close),
+        )
+        true_ranges.append(tr)
+
+    if len(true_ranges) < period:
+        return None
+
+    # SMA 평활화를 적용한 Modified ATR
+    recent_trs = true_ranges[-period:]
+    return sum(recent_trs) / len(recent_trs)
+
+
+class SwingSellStrategyEngine:
+    """3~5일 스윙 전략용 ATR 트레일링 스톱 매도 엔진.
+
+    핵심 로직:
+      1. 진입일 기준 ATR(5) 계산
+      2. 매일 종가 기준 스톱 라인 = 종가 - ATR × 승수
+      3. 스톱 라인은 상승만 허용 (래칫 메커니즘)
+      4. 스톱 터치 시 해당 분봉 종가로 매도
+      5. 최대 보유일(max_hold_days) 초과 시 종가 강제 청산
+
+    Reference:
+      KOSPI 모멘텀_스윙 알고리즘 전략 설계.md §4.1
+    """
+
+    ATR_PERIOD = 5
+    ATR_MULTIPLIER = 2.5
+    MAX_HOLD_DAYS = 5
+
+    def __init__(
+        self,
+        atr_period: int = 5,
+        atr_multiplier: float = 2.5,
+        max_hold_days: int = 5,
+    ):
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.max_hold_days = max_hold_days
+
+    def execute_multi_day(
+        self,
+        daily_bars: list[dict],
+        minute_bars_by_date: dict[str, list[dict]],
+        buy_price: float,
+        entry_date: str,
+        holding_dates: list[str],
+    ) -> dict:
+        """여러 날에 걸쳐 ATR 트레일링 스톱을 추적합니다.
+
+        Args:
+            daily_bars: 진입 이전~보유 기간까지의 일봉 (과거→최신).
+            minute_bars_by_date: {YYYYMMDD: [분봉 리스트]} — 보유 기간 중 분봉.
+            buy_price: 매수 평균 단가.
+            entry_date: 진입일 (YYYYMMDD).
+            holding_dates: 보유 기간의 영업일 리스트 [진입 다음날, ...].
+
+        Returns:
+            {
+                'sell_price': float,
+                'sell_date': str,
+                'sell_time': str,      # HHMM or 'CLOSE'
+                'sell_reason': str,
+                'return_rate': float,  # %
+                'hold_days': int,
+                'atr': float,
+                'max_stop_line': float,
+                'daily_stops': [{date, close, stop_line}, ...],
+            }
+        """
+        # ATR 계산 — 진입일까지의 일봉으로
+        entry_idx = -1
+        for i, bar in enumerate(daily_bars):
+            if bar.get("dt") == entry_date:
+                entry_idx = i
+                break
+
+        if entry_idx < 0:
+            entry_idx = len(daily_bars) - 1
+
+        # 진입일까지의 일봉으로 ATR 계산
+        bars_up_to_entry = daily_bars[:entry_idx + 1]
+        atr = compute_atr(bars_up_to_entry, self.atr_period)
+
+        if atr is None or atr == 0:
+            # ATR 계산 불가 시 buy_price 기준 고정 스톱 (-5%)
+            atr = buy_price * 0.02  # fallback
+            logger.warning("ATR 계산 불가, fallback ATR=%.0f 사용", atr)
+
+        stop_distance = atr * self.atr_multiplier
+        stop_line = buy_price - stop_distance
+        max_stop_line = stop_line
+        daily_stops = []
+
+        logger.info(
+            "스윙 매도 시작: 매수가=%.0f, ATR=%.0f, 스톱간격=%.0f, 초기스톱=%.0f",
+            buy_price, atr, stop_distance, stop_line,
+        )
+
+        # 보유 기간 순회
+        for day_num, hold_date in enumerate(holding_dates, start=1):
+            # 최대 보유일 초과 → 강제 청산
+            if day_num > self.max_hold_days:
+                # 이전 날의 마지막 종가로 청산
+                prev_date = holding_dates[day_num - 2] if day_num >= 2 else entry_date
+                prev_bars = minute_bars_by_date.get(prev_date, [])
+                sell_price = buy_price  # fallback
+                if prev_bars:
+                    sell_price = _parse_price(prev_bars[-1].get("cur_prc", "0"))
+
+                return self._make_swing_result(
+                    buy_price, sell_price, prev_date, "CLOSE",
+                    f"최대보유일({self.max_hold_days}일)초과_강제청산",
+                    day_num - 1, atr, max_stop_line, daily_stops,
+                )
+
+            # 해당 일의 분봉 가져오기
+            day_minute_bars = minute_bars_by_date.get(hold_date, [])
+
+            # 장중 스톱 체크: 저가가 스톱 라인 이하인 분봉 탐색
+            for bar in day_minute_bars:
+                low = _parse_price(bar.get("low_pric", "0"))
+                if low > 0 and low <= stop_line:
+                    # 스톱 터치! 해당 분봉 종가로 매도
+                    sell_price = _parse_price(bar.get("cur_prc", "0"))
+                    if sell_price <= 0:
+                        sell_price = stop_line
+                    sell_time = bar.get("cntr_tm", "")[8:12] if len(bar.get("cntr_tm", "")) >= 12 else "????"
+
+                    return self._make_swing_result(
+                        buy_price, sell_price, hold_date, sell_time,
+                        f"ATR트레일링스톱(스톱={stop_line:.0f},저가={low:.0f})",
+                        day_num, atr, max_stop_line, daily_stops,
+                    )
+
+            # 스톱에 안 걸린 경우 → 일봉 종가 기준 스톱 라인 갱신
+            # 해당 날의 일봉에서 종가 찾기
+            day_close = 0.0
+            for bar in daily_bars:
+                if bar.get("dt") == hold_date:
+                    day_close = _parse_price(bar.get("cur_prc", "0"))
+                    break
+
+            if day_close == 0 and day_minute_bars:
+                day_close = _parse_price(day_minute_bars[-1].get("cur_prc", "0"))
+
+            if day_close > 0:
+                new_stop = day_close - stop_distance
+                # 래칫: 스톱 라인은 상승만 허용
+                if new_stop > stop_line:
+                    stop_line = new_stop
+                    max_stop_line = max(max_stop_line, stop_line)
+                    logger.debug(
+                        "Day %d (%s): 스톱 상향 → %.0f (종가=%.0f)",
+                        day_num, hold_date, stop_line, day_close,
+                    )
+
+            daily_stops.append({
+                "date": hold_date,
+                "close": day_close,
+                "stop_line": stop_line,
+            })
+
+        # 모든 보유일을 스톱 없이 통과 → 마지막 날 종가 매도
+        last_date = holding_dates[-1] if holding_dates else entry_date
+        last_bars = minute_bars_by_date.get(last_date, [])
+        sell_price = buy_price  # fallback
+        if last_bars:
+            sell_price = _parse_price(last_bars[-1].get("cur_prc", "0"))
+        elif daily_stops:
+            sell_price = daily_stops[-1]["close"]
+
+        return self._make_swing_result(
+            buy_price, sell_price, last_date, "CLOSE",
+            f"보유만기({len(holding_dates)}일)_종가청산",
+            len(holding_dates), atr, max_stop_line, daily_stops,
+        )
+
+    @staticmethod
+    def _make_swing_result(
+        buy_price: float,
+        sell_price: float,
+        sell_date: str,
+        sell_time: str,
+        reason: str,
+        hold_days: int,
+        atr: float,
+        max_stop_line: float,
+        daily_stops: list[dict],
+    ) -> dict:
+        if buy_price > 0:
+            return_rate = (sell_price - buy_price) / buy_price * 100
+        else:
+            return_rate = 0.0
+
+        return {
+            "sell_price": sell_price,
+            "sell_date": sell_date,
+            "sell_time": sell_time,
+            "sell_reason": reason,
+            "return_rate": return_rate,
+            "hold_days": hold_days,
+            "atr": atr,
+            "max_stop_line": max_stop_line,
+            "daily_stops": daily_stops,
+        }

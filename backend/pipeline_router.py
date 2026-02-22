@@ -106,6 +106,7 @@ class StopRequest(BaseModel):
 class KiwoomBacktestRequest(BaseModel):
     days: int = 99
     capital: float = 10_000_000
+    strategy: str = "legacy"  # "legacy" or "swing"
 
 
 # ── Endpoints ──
@@ -188,7 +189,8 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
         raise HTTPException(status_code=404, detail="backtester.py not found")
     
     # Run as a module to avoid import errors
-    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.backtester", str(req.days), "--capital", str(req.capital)]
+    strategy = req.strategy if req.strategy in ("legacy", "swing") else "legacy"
+    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.backtester", str(req.days), "--capital", str(req.capital), "--strategy", strategy]
     ok = pm.start("kiwoom-backtest", cmd)
     if not ok:
         return {"message": "Kiwoom Backtest is already running", "status": "running"}
