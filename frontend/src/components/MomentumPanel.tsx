@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle, Globe } from 'lucide-react';
+import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle, Globe, BookOpen, Info } from 'lucide-react';
 import axios from 'axios';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Area, AreaChart, Legend, Bar, BarChart } from 'recharts';
 
@@ -105,12 +105,79 @@ interface GlobalMomentumResult {
     elapsed_sec: number;
 }
 
-const PRESET_INFO: Record<string, { emoji: string; label: string; risk: number; desc: string }> = {
-    growth: { emoji: '🚀', label: '성장형', risk: 5, desc: '주식 55% + 대체 25%, 고수익 최우선' },
-    growth_seeking: { emoji: '📈', label: '성장추구형', risk: 4, desc: '주식 50% 과반, 적극 자산 증식' },
-    balanced: { emoji: '⚖️', label: '위험중립형', risk: 3, desc: '위험:안전 5:5 균형 배분' },
-    stability_seeking: { emoji: '🛡️', label: '안정추구형', risk: 2, desc: '채권 60% 중심, 시중금리+α' },
-    stable: { emoji: '🏦', label: '안정형', risk: 1, desc: '채권 75%, 원금 보존 최우선' },
+const PRESET_INFO: Record<string, { emoji: string; label: string; risk: number; desc: string; detail: string; weights: Record<string, number> }> = {
+    growth: {
+        emoji: '🚀', label: '성장형', risk: 5,
+        desc: '주식 55% + 대체 25%, 고수익 최우선',
+        detail: '선진국주식의 비중이 절반 이상. 대체투자(리츠·원자재·금)와 함께 수익성을 극대화하는 공격적 배분. 채권 비중 최소화.',
+        weights: { equity: 0.55, alternative: 0.25, foreign_bond: 0.15, domestic_bond: 0.00, cash: 0.05 },
+    },
+    growth_seeking: {
+        emoji: '📈', label: '성장추구형', risk: 4,
+        desc: '주식 50% 과반, 적극 자산 증식',
+        detail: '선진국 주식이 과반 이상. 해외채권과 대체투자를 보조적으로 편입하여 적극적인 자산 증식을 추구.',
+        weights: { equity: 0.50, alternative: 0.15, foreign_bond: 0.20, domestic_bond: 0.05, cash: 0.10 },
+    },
+    balanced: {
+        emoji: '⚖️', label: '위험중립형', risk: 3,
+        desc: '위험:안전 5:5 균형 배분',
+        detail: '선진국주식이 가장 많으나, 해외채권 비중이 커지며 수익과 위험의 균형을 맞춤. 모든 자산군에 고루 분산.',
+        weights: { equity: 0.35, alternative: 0.15, foreign_bond: 0.30, domestic_bond: 0.10, cash: 0.10 },
+    },
+    stability_seeking: {
+        emoji: '🛡️', label: '안정추구형', risk: 2,
+        desc: '채권 60% 중심, 시중금리+α',
+        detail: '채권 중심 유지. 선진국 주식·대체투자를 일부 편입하여 시중 금리 이상의 추가 수익을 추구. 안정성 우선.',
+        weights: { equity: 0.20, alternative: 0.10, foreign_bond: 0.35, domestic_bond: 0.25, cash: 0.10 },
+    },
+    stable: {
+        emoji: '🏦', label: '안정형', risk: 1,
+        desc: '채권 75%, 원금 보존 최우선',
+        detail: '해외채권이 절반 이상. 채권 위주로 구성하여 안정성을 최우선. 최소한의 주식 비중으로 인플레이션 방어.',
+        weights: { equity: 0.10, alternative: 0.05, foreign_bond: 0.50, domestic_bond: 0.25, cash: 0.10 },
+    },
+};
+
+// ── 자산군 레지스트리 (ETF 13종) ──
+interface AssetClassMeta {
+    ticker: string;
+    label: string;
+    category: string;
+    categoryLabel: string;
+    safeHaven: boolean;
+    description: string;
+}
+
+const ASSET_CLASS_REGISTRY: AssetClassMeta[] = [
+    // 주식
+    { ticker: 'SPY', label: '미국 대형주', category: 'equity', categoryLabel: '주식', safeHaven: false, description: 'S&P 500 추종. 미국 시가총액 상위 500개 대형주에 분산 투자하는 대표 ETF' },
+    { ticker: 'IWM', label: '미국 소형주', category: 'equity', categoryLabel: '주식', safeHaven: false, description: 'Russell 2000 추종. 미국 소형주 2,000종목에 투자하여 성장 잠재력 확보' },
+    { ticker: 'EFA', label: '선진국 (미국 제외)', category: 'equity', categoryLabel: '주식', safeHaven: false, description: 'MSCI EAFE 추종. 유럽·일본·호주 등 선진국 대형주에 분산 투자' },
+    { ticker: 'EEM', label: '신흥국', category: 'equity', categoryLabel: '주식', safeHaven: false, description: 'MSCI Emerging Markets 추종. 중국·인도·브라질 등 신흥국 주식에 투자' },
+    { ticker: 'EWY', label: '한국 주식', category: 'equity', categoryLabel: '주식', safeHaven: false, description: 'MSCI Korea 추종. 삼성전자·SK하이닉스 등 한국 대표 기업에 투자. 개별종목 Top-N 로직 연동' },
+    // 채권
+    { ticker: 'AGG', label: '미국 채권 (종합)', category: 'bond', categoryLabel: '채권', safeHaven: true, description: 'Bloomberg US Aggregate Bond 추종. 미국 투자등급 채권 종합 지수. 안전자산 ★' },
+    { ticker: 'IEF', label: '미국 국채 (중기)', category: 'bond', categoryLabel: '채권', safeHaven: true, description: '미국 7-10년 만기 국채 ETF. 금리 변동 중간 수준, 안정적 이자 수익. 안전자산 ★' },
+    { ticker: 'TLT', label: '미국 국채 (장기)', category: 'bond', categoryLabel: '채권', safeHaven: false, description: '미국 20년+ 장기 국채. 금리 리스크가 커서 대피처로는 부적합, 금리 하락 시 높은 수익' },
+    { ticker: 'TIP', label: '물가연동채', category: 'bond', categoryLabel: '채권', safeHaven: false, description: '미국 물가연동국채(TIPS) ETF. 인플레이션 상승 시 원금이 조정되어 실질 구매력 보호' },
+    // 실물자산
+    { ticker: 'VNQ', label: '글로벌 리츠', category: 'real_asset', categoryLabel: '실물자산', safeHaven: false, description: 'Vanguard 미국 리츠 ETF. 부동산투자회사에 투자하여 임대·배당 수익 확보' },
+    { ticker: 'DBC', label: '원자재', category: 'real_asset', categoryLabel: '실물자산', safeHaven: false, description: 'Invesco DB Commodity 추종. 원유·천연가스·금속·농산물 등 광범위한 원자재 바스켓' },
+    { ticker: 'GLD', label: '금', category: 'real_asset', categoryLabel: '실물자산', safeHaven: true, description: '금 현물 가격 추종 ETF. 전통적 안전자산, 인플레이션·지정학적 리스크 헤지. 안전자산 ★' },
+    // 현금등가
+    { ticker: 'SHY', label: '단기 국채 (현금등가)', category: 'cash', categoryLabel: '현금등가', safeHaven: true, description: '미국 1-3년 단기 국채. 변동성 최소, 최종 안전 대피처. BEAR 국면 시 자금 이동 대상. 안전자산 ★' },
+];
+
+const TICKER_LABEL_MAP: Record<string, string> = Object.fromEntries(
+    ASSET_CLASS_REGISTRY.map(a => [a.ticker, a.label])
+);
+
+const CATEGORY_WEIGHT_LABELS: Record<string, string> = {
+    equity: '주식',
+    alternative: '대체투자',
+    foreign_bond: '해외채권',
+    domestic_bond: '국내채권',
+    cash: '현금등가',
 };
 
 // ── Screener types ──
@@ -238,6 +305,136 @@ function RegimeBadge({ regime }: { regime: string }) {
             <span className={`w-2 h-2 rounded-full ${isBull ? 'bg-emerald-500' : 'bg-red-500'}`} />
             {isBull ? 'BULL' : 'BEAR'} 국면
         </span>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Asset Class Registry Reference Panel
+// ═══════════════════════════════════════════════════
+
+function AssetClassReferencePanel() {
+    const [isOpen, setIsOpen] = useState(false);
+
+    const categories = [
+        { key: 'equity', label: '주식 (Equity)', color: 'blue', emoji: '📊' },
+        { key: 'bond', label: '채권 (Bond)', color: 'emerald', emoji: '🏛️' },
+        { key: 'real_asset', label: '실물자산 (Real Asset)', color: 'amber', emoji: '🏗️' },
+        { key: 'cash', label: '현금등가 (Cash)', color: 'gray', emoji: '💵' },
+    ];
+
+    const colorMap: Record<string, { header: string; row: string; border: string }> = {
+        blue:    { header: 'bg-blue-50 text-blue-800', row: 'hover:bg-blue-50/40', border: 'border-blue-200' },
+        emerald: { header: 'bg-emerald-50 text-emerald-800', row: 'hover:bg-emerald-50/40', border: 'border-emerald-200' },
+        amber:   { header: 'bg-amber-50 text-amber-800', row: 'hover:bg-amber-50/40', border: 'border-amber-200' },
+        gray:    { header: 'bg-gray-100 text-gray-700', row: 'hover:bg-gray-50', border: 'border-gray-200' },
+    };
+
+    return (
+        <div className="mb-6 rounded-xl border border-gray-200 bg-white overflow-hidden">
+            <button
+                className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-gray-50 transition-colors"
+                onClick={() => setIsOpen(!isOpen)}
+            >
+                <div className="flex items-center gap-2.5">
+                    <BookOpen className="w-4 h-4 text-indigo-500" />
+                    <span className="text-sm font-bold text-gray-700">자산군 레지스트리 · ETF 13종 상세 안내</span>
+                    <span className="text-xs text-gray-400 font-normal ml-1">4개 카테고리 · 안전자산 4종 포함</span>
+                </div>
+                {isOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+            </button>
+            {isOpen && (
+                <div className="px-5 pb-5 space-y-4 border-t border-gray-100 pt-4">
+                    {/* Overall Summary */}
+                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
+                        <div className="flex items-start gap-2">
+                            <Info className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+                            <div className="text-xs text-gray-600 leading-relaxed space-y-1">
+                                <p>
+                                    <strong>글로벌 듀얼 모멘텀 전략</strong>은 4개 카테고리(주식·채권·실물자산·현금등가)의
+                                    <strong> 13개 글로벌 ETF</strong>를 대상으로 <strong>상대 모멘텀</strong>(자산간 비교)과
+                                    <strong> 절대 모멘텀</strong>(12개월 수익률 &gt; 0%)을 결합하여 자산을 배분합니다.
+                                </p>
+                                <p>
+                                    각 ETF는 <strong>SMA200 국면 필터</strong>로 BULL/BEAR를 판단하며,
+                                    BEAR 국면 자산의 비중은 <strong>안전자산(★ 표시)</strong>으로 자동 이전됩니다.
+                                    벤치마크는 전통적 <strong>60/40 포트폴리오</strong>(SPY 60% + AGG 40%)입니다.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Category Tables */}
+                    {categories.map(cat => {
+                        const assets = ASSET_CLASS_REGISTRY.filter(a => a.category === cat.key);
+                        const cm = colorMap[cat.color];
+                        return (
+                            <div key={cat.key} className={`rounded-lg border ${cm.border} overflow-hidden`}>
+                                <div className={`px-4 py-2 ${cm.header} flex items-center gap-2`}>
+                                    <span>{cat.emoji}</span>
+                                    <span className="text-xs font-bold">{cat.label}</span>
+                                    <span className="text-xs opacity-60 ml-auto">{assets.length}종</span>
+                                </div>
+                                <table className="w-full text-xs">
+                                    <thead>
+                                        <tr className="border-b border-gray-100 bg-gray-50/50">
+                                            <th className="px-4 py-2 text-left font-semibold text-gray-500 w-16">티커</th>
+                                            <th className="px-4 py-2 text-left font-semibold text-gray-500 w-36">자산명</th>
+                                            <th className="px-4 py-2 text-left font-semibold text-gray-500">설명</th>
+                                            <th className="px-4 py-2 text-center font-semibold text-gray-500 w-16">대피처</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {assets.map(asset => (
+                                            <tr key={asset.ticker} className={`border-b border-gray-50 ${cm.row}`}>
+                                                <td className="px-4 py-2.5 font-mono font-bold text-gray-800">{asset.ticker}</td>
+                                                <td className="px-4 py-2.5 font-medium text-gray-700">{asset.label}</td>
+                                                <td className="px-4 py-2.5 text-gray-600 leading-relaxed">{asset.description}</td>
+                                                <td className="px-4 py-2.5 text-center">
+                                                    {asset.safeHaven ? (
+                                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-emerald-100 text-emerald-600" title="안전자산 (Safe Haven)">★</span>
+                                                    ) : (
+                                                        <span className="text-gray-300">—</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        );
+                    })}
+
+                    {/* Category → Ticker Mapping for Presets */}
+                    <div className="rounded-lg border border-purple-200 overflow-hidden">
+                        <div className="px-4 py-2 bg-purple-50 text-purple-800 flex items-center gap-2">
+                            <span>🔗</span>
+                            <span className="text-xs font-bold">프리셋 카테고리 → ETF 매핑</span>
+                        </div>
+                        <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {[
+                                { cat: '주식 (equity)', tickers: ['SPY', 'IWM', 'EFA', 'EEM', 'EWY'] },
+                                { cat: '대체투자 (alternative)', tickers: ['VNQ', 'DBC', 'GLD'] },
+                                { cat: '해외채권 (foreign_bond)', tickers: ['AGG', 'IEF', 'TLT', 'TIP'] },
+                                { cat: '국내채권 (domestic_bond)', tickers: ['SHY'] },
+                                { cat: '현금 (cash)', tickers: ['SHY'] },
+                            ].map(m => (
+                                <div key={m.cat} className="bg-white rounded-lg border border-purple-100 p-3">
+                                    <div className="text-xs font-bold text-purple-700 mb-1.5">{m.cat}</div>
+                                    <div className="flex flex-wrap gap-1">
+                                        {m.tickers.map(t => (
+                                            <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-purple-50 text-purple-800 text-xs">
+                                                <span className="font-bold">{t}</span>
+                                                <span className="text-purple-400">{TICKER_LABEL_MAP[t]}</span>
+                                            </span>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -1224,7 +1421,52 @@ function GlobalBacktestTab() {
                             </button>
                         ))}
                     </div>
+
+                    {/* Selected Preset Detail */}
+                    {PRESET_INFO[preset] && (
+                        <div className="mt-4 rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50/50 to-purple-50/50 p-4">
+                            <div className="flex items-start gap-3">
+                                <div className="text-3xl">{PRESET_INFO[preset].emoji}</div>
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className="text-sm font-bold text-gray-800">{PRESET_INFO[preset].label}</span>
+                                        <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-medium">
+                                            위험도 {PRESET_INFO[preset].risk}/5
+                                        </span>
+                                    </div>
+                                    <p className="text-xs text-gray-600 leading-relaxed mb-3">{PRESET_INFO[preset].detail}</p>
+                                    <div className="space-y-1.5">
+                                        {Object.entries(PRESET_INFO[preset].weights).map(([cat, w]) => (
+                                            <div key={cat} className="flex items-center gap-2">
+                                                <span className="text-xs text-gray-500 w-16 text-right shrink-0">
+                                                    {CATEGORY_WEIGHT_LABELS[cat] ?? cat}
+                                                </span>
+                                                <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                                                    <div
+                                                        className={`h-full rounded-full transition-all ${
+                                                            cat === 'equity' ? 'bg-blue-400'
+                                                            : cat === 'alternative' ? 'bg-amber-400'
+                                                            : cat === 'foreign_bond' ? 'bg-emerald-400'
+                                                            : cat === 'domestic_bond' ? 'bg-teal-400'
+                                                            : 'bg-gray-400'
+                                                        }`}
+                                                        style={{ width: `${w * 100}%` }}
+                                                    />
+                                                </div>
+                                                <span className="text-xs font-bold text-gray-700 w-10 text-right">
+                                                    {(w * 100).toFixed(0)}%
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
+
+                {/* Asset Class Registry Reference */}
+                <AssetClassReferencePanel />
 
                 {/* Parameters */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -1301,10 +1543,11 @@ function GlobalBacktestTab() {
                                     (위험도 {result.config.risk_level ?? presetMeta.risk}/5)
                                 </span>
                             </h3>
-                            <div className="flex flex-wrap gap-2 mt-1">
+                            <p className="text-xs text-gray-500 mt-0.5 mb-2">{presetMeta.detail}</p>
+                            <div className="flex flex-wrap gap-2">
                                 {Object.entries(result.config.strategic_weights ?? {}).map(([cls, w]) => (
                                     <span key={cls} className="text-xs bg-white px-2 py-0.5 rounded border border-indigo-100 text-gray-600">
-                                        {cls}: <span className="font-bold">{w}</span>
+                                        {CATEGORY_WEIGHT_LABELS[cls] ?? cls}: <span className="font-bold">{w}</span>
                                     </span>
                                 ))}
                             </div>
@@ -1414,10 +1657,11 @@ function GlobalBacktestTab() {
                     {/* ETF Regime Badges */}
                     {result.regime_by_class && Object.keys(result.regime_by_class).length > 0 && (
                         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-                            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                            <h3 className="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
                                 <Shield className="w-4 h-4 text-indigo-500" />
                                 자산별 국면 현황 (최근)
                             </h3>
+                            <p className="text-xs text-gray-400 mb-4">SMA200 기준 — 현재가 {'>'} SMA200이면 BULL, 아니면 BEAR. BEAR 자산의 비중은 안전자산으로 이전됩니다.</p>
                             <div className="flex flex-wrap gap-2">
                                 {Object.entries(result.regime_by_class).map(([ticker, regime]) => (
                                     <span
@@ -1425,9 +1669,11 @@ function GlobalBacktestTab() {
                                         className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold ${regime === 'BULL'
                                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                                             : 'bg-red-50 text-red-700 border border-red-200'}`}
+                                        title={TICKER_LABEL_MAP[ticker] ?? ticker}
                                     >
                                         <span className={`w-1.5 h-1.5 rounded-full ${regime === 'BULL' ? 'bg-emerald-500' : 'bg-red-500'}`} />
                                         {ticker}
+                                        <span className="font-normal opacity-70">{TICKER_LABEL_MAP[ticker] ? `(${TICKER_LABEL_MAP[ticker]})` : ''}</span>
                                     </span>
                                 ))}
                             </div>
@@ -1447,9 +1693,11 @@ function GlobalBacktestTab() {
                                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                                         <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }}
                                             tickFormatter={(v: number) => v.toFixed(1) + '%'} />
-                                        <YAxis type="category" dataKey="ticker" tick={{ fontSize: 12, fill: '#4b5563', fontWeight: 600 }} width={52} />
+                                        <YAxis type="category" dataKey="ticker" tick={{ fontSize: 12, fill: '#4b5563', fontWeight: 600 }} width={100}
+                                            tickFormatter={(ticker: string) => `${ticker} ${TICKER_LABEL_MAP[ticker] ?? ''}`} />
                                         <Tooltip
                                             formatter={(val: unknown) => [Number(val).toFixed(1) + '%', '비중']}
+                                            labelFormatter={(ticker: unknown) => `${ticker} — ${TICKER_LABEL_MAP[String(ticker)] ?? ''}`}
                                             contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: 12 }}
                                         />
                                         <Bar dataKey="weight" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={20} />
@@ -1595,8 +1843,10 @@ function GlobalBacktestTab() {
                                                         <td className="px-3 py-2">
                                                             <div className="flex flex-wrap gap-1">
                                                                 {top5.map(([ticker, w]) => (
-                                                                    <span key={ticker} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
+                                                                    <span key={ticker} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-700"
+                                                                        title={TICKER_LABEL_MAP[ticker] ?? ticker}>
                                                                         <span className="font-bold">{ticker}</span>
+                                                                        <span className="text-gray-300 text-[10px]">{TICKER_LABEL_MAP[ticker] ?? ''}</span>
                                                                         <span className="text-gray-400">{(w * 100).toFixed(1)}%</span>
                                                                     </span>
                                                                 ))}
