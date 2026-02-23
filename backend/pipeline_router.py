@@ -4,11 +4,25 @@ import subprocess
 import threading
 import time
 import glob
+import math
 import requests as http_requests
 from collections import deque
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+
+
+def _sanitize_nan(obj):
+    """Recursively replace NaN / Inf float values with None so JSON serialisation succeeds."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
 
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 
@@ -246,7 +260,7 @@ async def get_momentum_result():
     try:
         with open(result_file, "r", encoding="utf-8") as f:
             data = __import__('json').load(f)
-        return {"status": "ok", "data": data}
+        return {"status": "ok", "data": _sanitize_nan(data)}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
@@ -282,7 +296,7 @@ async def get_momentum_screener_result():
     try:
         with open(result_file, "r", encoding="utf-8") as f:
             data = __import__('json').load(f)
-        return {"status": "ok", "data": data}
+        return {"status": "ok", "data": _sanitize_nan(data)}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
