@@ -249,6 +249,47 @@ const formatRatio = (n: number | undefined, digits = 2) => {
     return n.toFixed(digits);
 };
 
+/**
+ * 백엔드 metrics 키를 프론트엔드 MomentumMetrics 인터페이스에 맞게 변환.
+ *
+ * 백엔드는 `_pct` 접미사를 붙여 퍼센트 단위(예: -58.83 = -58.83%)로 제공하지만,
+ * 프론트엔드 formatPct()는 소수 비율(예: -0.5883)을 기대하므로 /100 변환도 수행.
+ */
+function normalizeMetrics(raw: Record<string, unknown>): MomentumMetrics {
+    const pctKeyMap: Record<string, string> = {
+        total_return_pct: 'total_return',
+        cagr_pct: 'cagr',
+        mdd_pct: 'mdd',
+        annual_volatility_pct: 'annualized_volatility',
+        daily_win_rate_pct: 'daily_win_rate',
+        monthly_win_rate_pct: 'monthly_win_rate',
+        best_day_pct: 'best_day',
+        worst_day_pct: 'worst_day',
+        best_month_pct: 'best_month',
+        worst_month_pct: 'worst_month',
+    };
+
+    const result: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(raw)) {
+        if (key in pctKeyMap) {
+            // _pct 키 → 소수 비율로 변환 (formatPct 가 n*100 하므로)
+            result[pctKeyMap[key]] = typeof value === 'number' ? value / 100 : value;
+        } else {
+            result[key] = value;
+        }
+    }
+
+    // 이미 정규화된 키가 있으면 덮어쓰지 않음 (하위호환)
+    for (const [, normalKey] of Object.entries(pctKeyMap)) {
+        if (normalKey in raw && !(normalKey in result)) {
+            result[normalKey] = raw[normalKey];
+        }
+    }
+
+    return result as MomentumMetrics;
+}
+
 // ═══════════════════════════════════════════════════
 //  Sub-components
 // ═══════════════════════════════════════════════════
@@ -951,7 +992,10 @@ function BacktestTab() {
         });
     }, [chartData]);
 
-    const metrics = result?.metrics ?? {};
+    const metrics = useMemo(() => {
+        if (!result?.metrics) return {} as MomentumMetrics;
+        return normalizeMetrics(result.metrics as unknown as Record<string, unknown>);
+    }, [result]);
 
     return (
         <div className="space-y-6">
@@ -1322,7 +1366,10 @@ function GlobalBacktestTab() {
             }));
     }, [result]);
 
-    const metrics = result?.metrics ?? {};
+    const metrics = useMemo(() => {
+        if (!result?.metrics) return {} as MomentumMetrics;
+        return normalizeMetrics(result.metrics as unknown as Record<string, unknown>);
+    }, [result]);
     const presetMeta = PRESET_INFO[result?.config?.portfolio_preset ?? preset] ?? PRESET_INFO.balanced;
 
     return (
@@ -1575,18 +1622,18 @@ function GlobalBacktestTab() {
                             <div className="text-xs text-gray-500 mb-2">벤치마크 (60/40)</div>
                             <div className="flex items-baseline gap-2">
                                 <span className="text-lg font-bold text-gray-600">
-                                    CAGR {formatPct(metrics.benchmark_cagr)}
+                                    CAGR {formatPct(metrics.benchmark_cagr as number | undefined)}
                                 </span>
                                 <span className="text-sm text-gray-400">
-                                    MDD {formatPct(metrics.benchmark_mdd)}
+                                    MDD {formatPct(metrics.benchmark_mdd as number | undefined)}
                                 </span>
                             </div>
                         </div>
                         <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
                             <div className="text-xs text-gray-500 mb-2">초과 수익 (Alpha)</div>
-                            <div className={`text-lg font-bold ${((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                                {((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) >= 0 ? '+' : ''}
-                                {(((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) * 100).toFixed(2)}%p
+                            <div className={`text-lg font-bold ${((metrics.cagr ?? 0) - ((metrics.benchmark_cagr as number) ?? 0)) >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                                {((metrics.cagr ?? 0) - ((metrics.benchmark_cagr as number) ?? 0)) >= 0 ? '+' : ''}
+                                {(((metrics.cagr ?? 0) - ((metrics.benchmark_cagr as number) ?? 0)) * 100).toFixed(2)}%p
                             </div>
                         </div>
                         <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
@@ -1693,7 +1740,7 @@ function GlobalBacktestTab() {
                                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                                         <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }}
                                             tickFormatter={(v: number) => v.toFixed(1) + '%'} />
-                                        <YAxis type="category" dataKey="ticker" tick={{ fontSize: 12, fill: '#4b5563', fontWeight: 600 }} width={100}
+                                        <YAxis type="category" dataKey="ticker" tick={{ fontSize: 11, fill: '#4b5563', fontWeight: 600 }} width={160}
                                             tickFormatter={(ticker: string) => `${ticker} ${TICKER_LABEL_MAP[ticker] ?? ''}`} />
                                         <Tooltip
                                             formatter={(val: unknown) => [Number(val).toFixed(1) + '%', '비중']}
