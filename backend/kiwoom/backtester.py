@@ -942,8 +942,8 @@ if __name__ == "__main__":
         "--strategy",
         type=str,
         default="legacy",
-        choices=["legacy", "swing", "pullback"],
-        help="전략 선택: legacy(기존 1일), swing(스윙 3~5일), pullback(스윙-풀백)"
+        choices=["legacy", "swing", "pullback", "momentum"],
+        help="전략 선택: legacy(기존 1일), swing(스윙 3~5일), pullback(스윙-풀백), momentum(중장기 듀얼모멘텀)"
     )
     parser.add_argument(
         "--mode",
@@ -973,6 +973,34 @@ if __name__ == "__main__":
         dest="stop_slippage_bps",
         help="[pullback] 손절 슬리피지 bp (기본값: 20 = 0.2%%)"
     )
+    # ── momentum 전용 인수 ──
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=20,
+        dest="top_n",
+        help="[momentum] 모멘텀 상위 편입 종목 수 (기본값: 20)"
+    )
+    parser.add_argument(
+        "--weight",
+        type=str,
+        default="inverse_volatility",
+        choices=["inverse_volatility", "equal_weight"],
+        dest="weight_method",
+        help="[momentum] 가중치 배분 방식 (기본값: inverse_volatility)"
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="[momentum] 전체 기간 백테스트"
+    )
+    parser.add_argument(
+        "--months",
+        type=int,
+        default=12,
+        dest="recent_months",
+        help="[momentum] 최근 N개월 백테스트 (--full 미지정 시, 기본값: 12)"
+    )
     
     args = parser.parse_args()
 
@@ -989,12 +1017,26 @@ if __name__ == "__main__":
         ],
     )
 
-    if args.strategy == "swing":
+    if args.strategy == "momentum":
+        from backend.kiwoom.momentum_backtester import MomentumBacktester
+        backtester = MomentumBacktester(
+            initial_capital=args.capital,
+            top_n=args.top_n,
+            weight_method=args.weight_method,
+        )
+        result = backtester.run(
+            full=args.full,
+            recent_months=args.recent_months,
+        )
+        print(result["report"])
+    elif args.strategy == "swing":
         backtester = SwingBacktester(initial_capital=args.capital)
         result = backtester.run(
             start_days_ago=args.days,
             use_daily_only=(args.mode == "daily"),
         )
+        print(result["summary"])
+        print(f"\n  데이터 모드: {args.mode}")
     elif args.strategy == "pullback":
         backtester = PullbackBacktester(
             initial_capital=args.capital,
@@ -1006,9 +1048,11 @@ if __name__ == "__main__":
             start_days_ago=args.days,
             use_daily_only=(args.mode == "daily"),
         )
+        print(result["summary"])
+        print(f"\n  데이터 모드: {args.mode}")
     else:
         backtester = ThemeBacktester(initial_capital=args.capital)
         result = backtester.run(start_days_ago=args.days)
-    print(result["summary"])
-    print(f"\n  데이터 모드: {args.mode}")
+        print(result["summary"])
+        print(f"\n  데이터 모드: {args.mode}")
 

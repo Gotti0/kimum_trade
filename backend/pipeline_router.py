@@ -209,6 +209,84 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     return {"message": "Kiwoom Backtest started", "status": "started"}
 
 
+class MomentumBacktestRequest(BaseModel):
+    capital: float = 100_000_000
+    top_n: int = 20
+    weight_method: str = "inverse_volatility"  # or "equal_weight"
+    months: int = 12
+    full: bool = False
+
+
+@router.post("/momentum-backtest")
+async def run_momentum_backtest(req: MomentumBacktestRequest):
+    """Run Mid-to-Long Term Dual Momentum Backtester."""
+    weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
+    cmd = [
+        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_backtester",
+        "--capital", str(req.capital),
+        "--top-n", str(req.top_n),
+        "--weight", weight,
+        "--months", str(req.months),
+        "--save-json",
+    ]
+    if req.full:
+        cmd.append("--full")
+    ok = pm.start("momentum-backtest", cmd)
+    if not ok:
+        return {"message": "Momentum Backtest is already running", "status": "running"}
+    return {"message": "Momentum Backtest started", "status": "started"}
+
+
+@router.get("/momentum-backtest/result")
+async def get_momentum_result():
+    """Return the latest momentum backtest result from JSON file."""
+    result_file = os.path.join(PROJECT_ROOT, "cache", "momentum", "latest_result.json")
+    if not os.path.isfile(result_file):
+        return {"status": "no_data", "data": None}
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            data = __import__('json').load(f)
+        return {"status": "ok", "data": data}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+class MomentumScreenerRequest(BaseModel):
+    top_n: int = 20
+    weight_method: str = "inverse_volatility"
+    min_trading_value: float = 5e9
+
+
+@router.post("/momentum-screener")
+async def run_momentum_screener(req: MomentumScreenerRequest):
+    """Run Dual Momentum Screener."""
+    weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
+    cmd = [
+        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_screener",
+        "--top-n", str(req.top_n),
+        "--weight", weight,
+        "--min-tv", str(req.min_trading_value),
+    ]
+    ok = pm.start("momentum-screener", cmd)
+    if not ok:
+        return {"message": "Momentum Screener is already running", "status": "running"}
+    return {"message": "Momentum Screener started", "status": "started"}
+
+
+@router.get("/momentum-screener/result")
+async def get_momentum_screener_result():
+    """Return the latest momentum screener result from JSON file."""
+    result_file = os.path.join(PROJECT_ROOT, "cache", "screener", "momentum_latest.json")
+    if not os.path.isfile(result_file):
+        return {"status": "no_data", "data": None}
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            data = __import__('json').load(f)
+        return {"status": "ok", "data": data}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 class ScreenerRequest(BaseModel):
     top_n: int = 30
     strategy: str = "swing"

@@ -1,0 +1,1009 @@
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle } from 'lucide-react';
+import axios from 'axios';
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Area, AreaChart } from 'recharts';
+
+const API = 'http://localhost:8001/api/pipeline';
+
+// ═══════════════════════════════════════════════════
+//  Types
+// ═══════════════════════════════════════════════════
+
+interface PipelineStatus {
+    name: string;
+    status: 'idle' | 'running' | 'finished';
+    pid?: number;
+    exitCode?: number;
+    logs: string[];
+}
+
+// ── Backtest types ──
+interface MomentumMetrics {
+    total_return?: number;
+    cagr?: number;
+    annualized_volatility?: number;
+    mdd?: number;
+    mdd_duration_days?: number;
+    mdd_recovery_days?: number;
+    sharpe_ratio?: number;
+    sortino_ratio?: number;
+    calmar_ratio?: number;
+    profit_factor?: number;
+    daily_win_rate?: number;
+    monthly_win_rate?: number;
+    total_trades?: number;
+    total_commission?: number;
+    total_slippage?: number;
+    total_friction?: number;
+    total_turnover?: number;
+    best_day?: number;
+    worst_day?: number;
+    best_month?: number;
+    worst_month?: number;
+    start_date?: string;
+    end_date?: string;
+    total_trading_days?: number;
+    total_years?: number;
+    final_equity?: number;
+    [key: string]: unknown;
+}
+
+interface MomentumResult {
+    timestamp: string;
+    config: {
+        initial_capital: number;
+        top_n: number;
+        weight_method: string;
+        commission: number;
+        slippage: number;
+        warmup_days: number;
+        min_trading_value: number;
+    };
+    metrics: MomentumMetrics;
+    equity_curve: Record<string, number>;
+    trade_summary: Record<string, number>;
+    regime_summary: { BULL: number; BEAR: number };
+    elapsed_sec: number;
+}
+
+// ── Screener types ──
+interface ScreenedStock {
+    rank: number;
+    stk_cd: string;
+    stk_nm: string;
+    close: number;
+    ret_3m: number;
+    ret_6m: number;
+    ret_12m: number;
+    score: number;
+    abs_pass: boolean;
+    weight: number;
+}
+
+interface UniverseStock {
+    stk_cd: string;
+    stk_nm: string;
+    close: number;
+    score: number;
+    ret_12m: number;
+    passed: boolean;
+    reason: string;
+}
+
+interface ScreenerResult {
+    timestamp: string;
+    ref_date: string;
+    regime: string;
+    kospi: number | null;
+    kospi_sma200: number | null;
+    config: {
+        top_n: number;
+        weight_method: string;
+        min_trading_value: number;
+    };
+    summary: {
+        total_stocks: number;
+        universe_size: number;
+        abs_momentum_pass: number;
+        selected_count: number;
+        data_start: string;
+        data_end: string;
+        error?: string;
+    };
+    passed_stocks: ScreenedStock[];
+    all_universe: UniverseStock[];
+    elapsed_sec: number;
+}
+
+// ═══════════════════════════════════════════════════
+//  Formatters
+// ═══════════════════════════════════════════════════
+
+const formatKRW = (n: number) => {
+    if (n >= 100_000_000) return (n / 100_000_000).toFixed(2) + '억';
+    if (n >= 10_000) return (n / 10_000).toFixed(0) + '만';
+    return n.toLocaleString();
+};
+
+const formatPct = (n: number | undefined, digits = 2) => {
+    if (n === undefined || n === null) return '-';
+    return (n * 100).toFixed(digits) + '%';
+};
+
+const formatRatio = (n: number | undefined, digits = 2) => {
+    if (n === undefined || n === null) return '-';
+    return n.toFixed(digits);
+};
+
+// ═══════════════════════════════════════════════════
+//  Sub-components
+// ═══════════════════════════════════════════════════
+
+function StatusBadge({ s }: { s: PipelineStatus }) {
+    const colors = {
+        idle: 'bg-gray-100 text-gray-600',
+        running: 'bg-amber-100 text-amber-600 animate-pulse',
+        finished: s.exitCode === 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700',
+    };
+    const labels = { idle: '대기', running: '실행 중', finished: s.exitCode === 0 ? '완료' : '오류' };
+    return (
+        <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold ${colors[s.status]}`}>
+            {s.status === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />}
+            {labels[s.status]}
+        </span>
+    );
+}
+
+function StatCard({ label, value, color, icon }: {
+    label: string; value: string; color: 'emerald' | 'red' | 'amber' | 'blue'; icon: React.ReactNode;
+}) {
+    const colorMap = {
+        emerald: { bg: 'bg-emerald-50', border: 'border-emerald-100', text: 'text-emerald-700', icon: 'text-emerald-500' },
+        red: { bg: 'bg-red-50', border: 'border-red-100', text: 'text-red-700', icon: 'text-red-500' },
+        amber: { bg: 'bg-amber-50', border: 'border-amber-100', text: 'text-amber-700', icon: 'text-amber-500' },
+        blue: { bg: 'bg-blue-50', border: 'border-blue-100', text: 'text-blue-700', icon: 'text-blue-500' },
+    };
+    const c = colorMap[color];
+    return (
+        <div className={`${c.bg} rounded-xl border ${c.border} p-4`}>
+            <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-medium text-gray-500">{label}</span>
+                <span className={c.icon}>{icon}</span>
+            </div>
+            <div className={`text-2xl font-bold ${c.text}`}>{value}</div>
+        </div>
+    );
+}
+
+function MetricItem({ label, value }: { label: string; value: string }) {
+    return (
+        <div className="rounded-lg bg-gray-50 border border-gray-100 p-3">
+            <div className="text-xs text-gray-500">{label}</div>
+            <div className="text-sm font-bold text-gray-800 mt-1">{value}</div>
+        </div>
+    );
+}
+
+function RegimeBadge({ regime }: { regime: string }) {
+    const isBull = regime === 'BULL';
+    return (
+        <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold ${isBull ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+            <span className={`w-2 h-2 rounded-full ${isBull ? 'bg-emerald-500' : 'bg-red-500'}`} />
+            {isBull ? 'BULL' : 'BEAR'} 국면
+        </span>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Log Viewer (shared)
+// ═══════════════════════════════════════════════════
+
+function LogViewer({ status, label }: { status: PipelineStatus; label: string }) {
+    const [showLogs, setShowLogs] = useState(false);
+    const logRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    }, [status.logs]);
+
+    return (
+        <div className="bg-gray-900 rounded-xl shadow-2xl border border-gray-800 overflow-hidden">
+            <button
+                className="w-full flex items-center justify-between px-5 py-3 bg-gray-800/50 border-b border-gray-800 hover:bg-gray-800/80 transition-colors"
+                onClick={() => setShowLogs(!showLogs)}
+            >
+                <div className="flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-amber-400" />
+                    <span className="text-sm font-bold text-gray-300">
+                        Execution Logs <span className="text-amber-400 text-xs ml-1">[{label}]</span>
+                    </span>
+                </div>
+                <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-gray-500 font-mono">
+                        {status.pid ? `PID: ${status.pid}` : 'IDLE'} | {status.logs.length} lines
+                    </span>
+                    {showLogs ? <ChevronUp className="w-4 h-4 text-gray-500" /> : <ChevronDown className="w-4 h-4 text-gray-500" />}
+                </div>
+            </button>
+            {showLogs && (
+                <div
+                    ref={logRef}
+                    className="p-6 font-mono text-sm text-gray-300 h-[400px] overflow-y-auto leading-relaxed scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
+                >
+                    {status.logs.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-600 italic">
+                            <Terminal className="w-12 h-12 mb-2 opacity-20" />
+                            실행 로그가 여기에 표시됩니다.
+                        </div>
+                    ) : (
+                        status.logs.map((line, i) => (
+                            <div key={i} className="mb-0.5 border-l-2 border-transparent hover:border-amber-500/30 hover:bg-white/5 px-2 transition-all">
+                                <span className="text-gray-600 inline-block w-8 select-none">{i + 1}</span>
+                                {line}
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Strategy Info Card (shared)
+// ═══════════════════════════════════════════════════
+
+function StrategyInfoCard() {
+    return (
+        <div className="mb-6 rounded-xl border p-4 bg-amber-50/50 border-amber-100">
+            <div className="flex items-center gap-2 mb-3">
+                <Shield className="w-4 h-4 text-amber-500" />
+                <span className="text-sm font-bold text-amber-700">전략 파라미터</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">모멘텀 윈도우</div>
+                    <div className="font-bold text-gray-800 mt-0.5">3 / 6 / 12개월</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">국면 필터</div>
+                    <div className="font-bold text-gray-800 mt-0.5">KOSPI vs SMA200</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">리밸런싱 주기</div>
+                    <div className="font-bold text-gray-800 mt-0.5">월말 (Monthly)</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">절대 모멘텀</div>
+                    <div className="font-bold text-gray-800 mt-0.5">12M {'>'} 0%</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">ADTV 임계값</div>
+                    <div className="font-bold text-gray-800 mt-0.5">50억 원</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">슬리피지 모델</div>
+                    <div className="font-bold text-gray-800 mt-0.5">방향성 0.2%</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">매매 방식</div>
+                    <div className="font-bold text-gray-800 mt-0.5">Netting (차액)</div>
+                </div>
+                <div className="bg-white rounded-lg p-2.5 border border-amber-100">
+                    <div className="text-gray-500">수수료</div>
+                    <div className="font-bold text-gray-800 mt-0.5">0.015% (편도)</div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Screener Tab
+// ═══════════════════════════════════════════════════
+
+function ScreenerTab() {
+    const [status, setStatus] = useState<PipelineStatus>({ name: 'momentum-screener', status: 'idle', logs: [] });
+    const [result, setResult] = useState<ScreenerResult | null>(null);
+    const [topN, setTopN] = useState(20);
+    const [weightMethod, setWeightMethod] = useState<'inverse_volatility' | 'equal_weight'>('inverse_volatility');
+    const [sortKey, setSortKey] = useState<'rank' | 'score' | 'ret_3m' | 'ret_6m' | 'ret_12m' | 'weight' | 'close'>('rank');
+    const [sortAsc, setSortAsc] = useState(true);
+    const [showUniverse, setShowUniverse] = useState(false);
+
+    const isRunning = status.status === 'running';
+
+    // Status polling
+    useEffect(() => {
+        const fetchFn = () => {
+            axios.get(`${API}/status/momentum-screener`)
+                .then(r => setStatus(r.data))
+                .catch(() => { });
+        };
+        fetchFn();
+        const id = setInterval(fetchFn, 3000);
+        return () => clearInterval(id);
+    }, []);
+
+    // Auto-load results
+    useEffect(() => {
+        if (status.status === 'finished' && status.exitCode === 0) loadResults();
+    }, [status.status, status.exitCode]);
+
+    useEffect(() => { loadResults(); }, []);
+
+    const loadResults = () => {
+        axios.get(`${API}/momentum-screener/result`)
+            .then(r => {
+                if (r.data.status === 'ok' && r.data.data) setResult(r.data.data);
+            })
+            .catch(() => { });
+    };
+
+    const startScreener = () => {
+        axios.post(`${API}/momentum-screener`, {
+            top_n: topN,
+            weight_method: weightMethod,
+        }).catch(err => alert('실행 실패: ' + err.message));
+    };
+
+    const stopScreener = () => {
+        axios.post(`${API}/stop`, { name: 'momentum-screener' }).catch(() => { });
+    };
+
+    // Sorted stocks
+    const sortedStocks = useMemo(() => {
+        if (!result?.passed_stocks) return [];
+        const arr = [...result.passed_stocks];
+        arr.sort((a, b) => {
+            const va = a[sortKey] ?? 0;
+            const vb = b[sortKey] ?? 0;
+            return sortAsc ? (va as number) - (vb as number) : (vb as number) - (va as number);
+        });
+        return arr;
+    }, [result, sortKey, sortAsc]);
+
+    const handleSort = (key: typeof sortKey) => {
+        if (sortKey === key) setSortAsc(!sortAsc);
+        else { setSortKey(key); setSortAsc(key === 'rank'); }
+    };
+
+    const SortHeader = ({ label, k, className = '' }: { label: string; k: typeof sortKey; className?: string }) => (
+        <th
+            className={`px-3 py-3 text-xs font-semibold text-gray-500 cursor-pointer hover:text-gray-800 transition-colors select-none ${className}`}
+            onClick={() => handleSort(k)}
+        >
+            <div className="flex items-center gap-1 justify-end">
+                {label}
+                <ArrowUpDown className={`w-3 h-3 ${sortKey === k ? 'text-amber-500' : 'text-gray-300'}`} />
+            </div>
+        </th>
+    );
+
+    const summary = result?.summary;
+
+    return (
+        <div className="space-y-6">
+            {/* Controls */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-amber-100 flex items-center justify-center">
+                            <Search className="w-6 h-6 text-amber-600" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-800">듀얼 모멘텀 스크리너</h2>
+                            <p className="text-sm text-gray-500">현시점 기준 3/6/12개월 듀얼 모멘텀 Top-N 종목 스크리닝</p>
+                        </div>
+                    </div>
+                    <StatusBadge s={status} />
+                </div>
+
+                <StrategyInfoCard />
+
+                {/* Parameters */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <Target className="w-4 h-4 text-gray-400" />
+                            Top-N 편입 종목
+                        </label>
+                        <input
+                            type="number" min={5} max={50} step={5}
+                            className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all"
+                            value={topN}
+                            onChange={e => setTopN(Number(e.target.value))}
+                            disabled={isRunning}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <BarChart3 className="w-4 h-4 text-gray-400" />
+                            가중치 배분
+                        </label>
+                        <select
+                            className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all bg-white"
+                            value={weightMethod}
+                            onChange={e => setWeightMethod(e.target.value as 'inverse_volatility' | 'equal_weight')}
+                            disabled={isRunning}
+                        >
+                            <option value="inverse_volatility">변동성 역가중 (IV)</option>
+                            <option value="equal_weight">동일 비중 (EW)</option>
+                        </select>
+                    </div>
+                    <div className="flex items-end">
+                        <div className="flex gap-3 w-full">
+                            <button
+                                className="flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 transition-all shadow-lg shadow-amber-200 active:scale-[0.98]"
+                                onClick={startScreener}
+                                disabled={isRunning}
+                            >
+                                <Play className="w-4 h-4" />
+                                스크리닝 시작
+                            </button>
+                            <button
+                                className="flex items-center justify-center px-4 py-2.5 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
+                                onClick={stopScreener}
+                                disabled={!isRunning}
+                            >
+                                <Square className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* ──────── Results ──────── */}
+            {result && (
+                <>
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">국면</div>
+                            {result.regime ? <RegimeBadge regime={result.regime} /> : <span className="text-gray-400">-</span>}
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">KOSPI / SMA200</div>
+                            <div className="text-lg font-bold text-gray-800">
+                                {result.kospi ? result.kospi.toLocaleString() : '-'}
+                                <span className="text-gray-400 text-sm font-normal"> / </span>
+                                {result.kospi_sma200 ? result.kospi_sma200.toLocaleString() : '-'}
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">유니버스 (ADTV≥50억)</div>
+                            <div className="text-lg font-bold text-gray-800">{summary?.universe_size ?? '-'}
+                                <span className="text-sm font-normal text-gray-400"> / {summary?.total_stocks ?? '-'} 종목</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">절대 모멘텀 통과</div>
+                            <div className="text-lg font-bold text-emerald-700">{summary?.abs_momentum_pass ?? '-'}
+                                <span className="text-sm font-normal text-gray-400"> 종목</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">최종 편입</div>
+                            <div className="text-lg font-bold text-amber-700">{summary?.selected_count ?? '-'}
+                                <span className="text-sm font-normal text-gray-400"> 종목</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* BEAR Warning */}
+                    {result.regime === 'BEAR' && (
+                        <div className="bg-red-50 border border-red-200 rounded-xl p-5 flex items-start gap-3">
+                            <Shield className="w-6 h-6 text-red-500 mt-0.5 flex-shrink-0" />
+                            <div>
+                                <h3 className="text-red-800 font-bold">BEAR 국면 감지 -- 전액 현금화 권고</h3>
+                                <p className="text-red-600 text-sm mt-1">
+                                    KOSPI({result.kospi?.toLocaleString()})가 SMA200({result.kospi_sma200?.toLocaleString()}) 아래입니다.
+                                    듀얼 모멘텀 전략에 따라 모든 주식 비중을 0%로 설정하고 전액 현금을 보유하는 것을 권장합니다.
+                                </p>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Top-N Table */}
+                    {sortedStocks.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <TrendingUp className="w-5 h-5 text-amber-500" />
+                                    <h3 className="text-lg font-bold text-gray-800">
+                                        모멘텀 Top-{result.config.top_n} 편입 종목
+                                    </h3>
+                                    <span className="text-xs text-gray-400 ml-2">
+                                        기준일: {result.ref_date} | {result.config.weight_method === 'inverse_volatility' ? '변동성 역가중' : '동일 비중'}
+                                    </span>
+                                </div>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="bg-gray-50 border-b border-gray-100">
+                                            <SortHeader label="Rank" k="rank" className="text-left pl-6" />
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">종목코드</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">종목명</th>
+                                            <SortHeader label="종가" k="close" />
+                                            <SortHeader label="3M" k="ret_3m" />
+                                            <SortHeader label="6M" k="ret_6m" />
+                                            <SortHeader label="12M" k="ret_12m" />
+                                            <SortHeader label="Score" k="score" />
+                                            <SortHeader label="비중(%)" k="weight" />
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {sortedStocks.map((stk, i) => (
+                                            <tr key={stk.stk_cd} className={`border-b border-gray-50 hover:bg-amber-50/30 transition-colors ${i < 5 ? 'bg-amber-50/10' : ''}`}>
+                                                <td className="px-3 py-2.5 pl-6 font-bold text-amber-600">{stk.rank}</td>
+                                                <td className="px-3 py-2.5 font-mono text-gray-600 text-xs">{stk.stk_cd}</td>
+                                                <td className="px-3 py-2.5 font-semibold text-gray-800">{stk.stk_nm}</td>
+                                                <td className="px-3 py-2.5 text-right font-mono text-gray-700">{stk.close.toLocaleString()}</td>
+                                                <td className={`px-3 py-2.5 text-right font-mono ${stk.ret_3m >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {stk.ret_3m >= 0 ? '+' : ''}{stk.ret_3m.toFixed(1)}%
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-mono ${stk.ret_6m >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {stk.ret_6m >= 0 ? '+' : ''}{stk.ret_6m.toFixed(1)}%
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-mono ${stk.ret_12m >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {stk.ret_12m >= 0 ? '+' : ''}{stk.ret_12m.toFixed(1)}%
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-bold ${stk.score >= 0 ? 'text-amber-700' : 'text-red-600'}`}>
+                                                    {stk.score >= 0 ? '+' : ''}{stk.score.toFixed(1)}%
+                                                </td>
+                                                <td className="px-3 py-2.5 text-right font-bold text-blue-700">
+                                                    {stk.weight.toFixed(2)}%
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="px-6 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-400 flex justify-between">
+                                <span>{result.timestamp} | {result.elapsed_sec}초 소요</span>
+                                <span>데이터 기간: {summary?.data_start} ~ {summary?.data_end}</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* All Universe (collapsible) */}
+                    {result.all_universe && result.all_universe.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <button
+                                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                                onClick={() => setShowUniverse(!showUniverse)}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <BarChart3 className="w-5 h-5 text-gray-400" />
+                                    <span className="text-sm font-bold text-gray-700">
+                                        전체 유니버스 ({result.all_universe.length}종목)
+                                    </span>
+                                    <span className="text-xs text-gray-400">
+                                        통과 {result.all_universe.filter(s => s.passed).length} / 탈락 {result.all_universe.filter(s => !s.passed).length}
+                                    </span>
+                                </div>
+                                {showUniverse ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                            </button>
+                            {showUniverse && (
+                                <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                                    <table className="w-full text-sm">
+                                        <thead className="sticky top-0 bg-gray-50">
+                                            <tr className="border-b border-gray-100">
+                                                <th className="px-4 py-2 text-xs font-semibold text-gray-500 text-left">상태</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-left">코드</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-left">종목명</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">종가</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">12M</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">Score</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-left">사유</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {result.all_universe.map(stk => (
+                                                <tr key={stk.stk_cd} className={`border-b border-gray-50 text-xs ${stk.passed ? 'bg-amber-50/20' : 'opacity-60'}`}>
+                                                    <td className="px-4 py-1.5">
+                                                        {stk.passed
+                                                            ? <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                                                            : <XCircle className="w-4 h-4 text-red-400" />}
+                                                    </td>
+                                                    <td className="px-3 py-1.5 font-mono text-gray-600">{stk.stk_cd}</td>
+                                                    <td className="px-3 py-1.5 text-gray-800">{stk.stk_nm}</td>
+                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-600">{stk.close.toLocaleString()}</td>
+                                                    <td className={`px-3 py-1.5 text-right font-mono ${stk.ret_12m >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                        {stk.ret_12m >= 0 ? '+' : ''}{stk.ret_12m.toFixed(1)}%
+                                                    </td>
+                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-700">{stk.score.toFixed(1)}%</td>
+                                                    <td className="px-3 py-1.5 text-gray-400 truncate max-w-[200px]">{stk.reason}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Log Viewer */}
+            <LogViewer status={status} label="Screener" />
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Backtest Tab
+// ═══════════════════════════════════════════════════
+
+function BacktestTab() {
+    const [status, setStatus] = useState<PipelineStatus>({ name: 'momentum-backtest', status: 'idle', logs: [] });
+    const [result, setResult] = useState<MomentumResult | null>(null);
+    const [capital, setCapital] = useState(100_000_000);
+    const [topN, setTopN] = useState(20);
+    const [weightMethod, setWeightMethod] = useState<'inverse_volatility' | 'equal_weight'>('inverse_volatility');
+    const [months, setMonths] = useState(12);
+    const [fullPeriod, setFullPeriod] = useState(false);
+    const [showChart, setShowChart] = useState(true);
+
+    const isRunning = status.status === 'running';
+
+    // Status polling
+    useEffect(() => {
+        const fetchStatus = () => {
+            axios.get(`${API}/status/momentum-backtest`)
+                .then(r => setStatus(r.data))
+                .catch(() => { });
+        };
+        fetchStatus();
+        const id = setInterval(fetchStatus, 3000);
+        return () => clearInterval(id);
+    }, []);
+
+    useEffect(() => {
+        if (status.status === 'finished' && status.exitCode === 0) loadResults();
+    }, [status.status, status.exitCode]);
+
+    useEffect(() => { loadResults(); }, []);
+
+    const loadResults = () => {
+        axios.get(`${API}/momentum-backtest/result`)
+            .then(r => { if (r.data.status === 'ok' && r.data.data) setResult(r.data.data); })
+            .catch(() => { });
+    };
+
+    const startBacktest = () => {
+        axios.post(`${API}/momentum-backtest`, {
+            capital, top_n: topN, weight_method: weightMethod, months, full: fullPeriod,
+        }).catch(err => alert('실행 실패: ' + err.message));
+    };
+
+    const stopBacktest = () => {
+        axios.post(`${API}/stop`, { name: 'momentum-backtest' }).catch(() => { });
+    };
+
+    const chartData = useMemo(() => {
+        if (!result?.equity_curve) return [];
+        return Object.entries(result.equity_curve)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([date, value]) => ({ date, value: Math.round(value), displayDate: date.slice(5) }));
+    }, [result]);
+
+    const drawdownData = useMemo(() => {
+        if (chartData.length === 0) return [];
+        let peak = chartData[0].value;
+        return chartData.map(d => {
+            if (d.value > peak) peak = d.value;
+            const dd = peak > 0 ? ((d.value - peak) / peak) * 100 : 0;
+            return { date: d.date, displayDate: d.displayDate, drawdown: Math.round(dd * 100) / 100 };
+        });
+    }, [chartData]);
+
+    const metrics = result?.metrics ?? {};
+
+    return (
+        <div className="space-y-6">
+            {/* Controls */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-amber-100 flex items-center justify-center">
+                            <TrendingUp className="w-6 h-6 text-amber-600" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-800">중장기 듀얼 모멘텀 백테스터</h2>
+                            <p className="text-sm text-gray-500">3/6/12개월 복합 모멘텀 + KOSPI SMA200 국면 필터 + 월말 리밸런싱</p>
+                        </div>
+                    </div>
+                    <StatusBadge s={status} />
+                </div>
+
+                <StrategyInfoCard />
+
+                {/* Parameters */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <DollarSign className="w-4 h-4 text-gray-400" />
+                            초기 자본금
+                        </label>
+                        <div className="relative">
+                            <input
+                                type="number"
+                                className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all"
+                                value={capital} onChange={e => setCapital(Number(e.target.value))} disabled={isRunning}
+                            />
+                            <span className="absolute right-4 top-3 text-gray-400 text-sm">원</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <Target className="w-4 h-4 text-gray-400" />
+                            Top-N 편입 종목
+                        </label>
+                        <input
+                            type="number" min={5} max={50} step={5}
+                            className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all"
+                            value={topN} onChange={e => setTopN(Number(e.target.value))} disabled={isRunning}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <BarChart3 className="w-4 h-4 text-gray-400" />
+                            가중치 배분
+                        </label>
+                        <select
+                            className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all bg-white"
+                            value={weightMethod}
+                            onChange={e => setWeightMethod(e.target.value as 'inverse_volatility' | 'equal_weight')}
+                            disabled={isRunning}
+                        >
+                            <option value="inverse_volatility">변동성 역가중 (IV)</option>
+                            <option value="equal_weight">동일 비중 (EW)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <Activity className="w-4 h-4 text-gray-400" />
+                            백테스트 기간
+                        </label>
+                        <div className="flex gap-2">
+                            {!fullPeriod && (
+                                <div className="relative flex-1">
+                                    <input
+                                        type="number" min={3} max={120}
+                                        className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-amber-500 outline-none transition-all"
+                                        value={months} onChange={e => setMonths(Number(e.target.value))} disabled={isRunning}
+                                    />
+                                    <span className="absolute right-3 top-3 text-gray-400 text-sm">개월</span>
+                                </div>
+                            )}
+                            <button
+                                className={`px-3 py-2.5 rounded-lg text-xs font-bold transition-all border ${fullPeriod
+                                    ? 'bg-amber-100 text-amber-800 border-amber-300 ring-1 ring-amber-200'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:border-amber-300'}`}
+                                onClick={() => setFullPeriod(!fullPeriod)} disabled={isRunning}
+                            >
+                                {fullPeriod ? '전체' : 'ALL'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3">
+                    <button
+                        className="flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-xl font-bold text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 transition-all shadow-lg shadow-amber-200 active:scale-[0.98]"
+                        onClick={startBacktest} disabled={isRunning}
+                    >
+                        <Play className="w-5 h-5" />
+                        듀얼 모멘텀 백테스팅 시작
+                    </button>
+                    <button
+                        className="flex items-center justify-center px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
+                        onClick={stopBacktest} disabled={!isRunning}
+                    >
+                        <Square className="w-5 h-5" /> 중단
+                    </button>
+                </div>
+            </div>
+
+            {/* Results */}
+            {result && (
+                <>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <StatCard label="총 수익률" value={formatPct(metrics.total_return)}
+                            color={(metrics.total_return ?? 0) >= 0 ? 'emerald' : 'red'}
+                            icon={<TrendingUp className="w-5 h-5" />} />
+                        <StatCard label="CAGR" value={formatPct(metrics.cagr)}
+                            color={(metrics.cagr ?? 0) >= 0 ? 'emerald' : 'red'}
+                            icon={<Percent className="w-5 h-5" />} />
+                        <StatCard label="MDD" value={formatPct(metrics.mdd)} color="red"
+                            icon={<Activity className="w-5 h-5" />} />
+                        <StatCard label="Sharpe Ratio" value={formatRatio(metrics.sharpe_ratio)}
+                            color={(metrics.sharpe_ratio ?? 0) >= 1 ? 'emerald' : 'amber'}
+                            icon={<BarChart3 className="w-5 h-5" />} />
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                        <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                            <BarChart3 className="w-5 h-5 text-amber-500" />
+                            상세 성과 지표
+                        </h3>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                            <MetricItem label="Sortino Ratio" value={formatRatio(metrics.sortino_ratio)} />
+                            <MetricItem label="Calmar Ratio" value={formatRatio(metrics.calmar_ratio)} />
+                            <MetricItem label="Profit Factor" value={formatRatio(metrics.profit_factor)} />
+                            <MetricItem label="일간 승률" value={formatPct(metrics.daily_win_rate)} />
+                            <MetricItem label="월간 승률" value={formatPct(metrics.monthly_win_rate)} />
+                            <MetricItem label="연환산 변동성" value={formatPct(metrics.annualized_volatility)} />
+                            <MetricItem label="MDD 지속" value={metrics.mdd_duration_days !== undefined ? `${metrics.mdd_duration_days}일` : '-'} />
+                            <MetricItem label="Best Day" value={formatPct(metrics.best_day)} />
+                            <MetricItem label="Worst Day" value={formatPct(metrics.worst_day)} />
+                            <MetricItem label="최종 자산" value={metrics.final_equity ? formatKRW(metrics.final_equity) + '원' : '-'} />
+                        </div>
+
+                        <div className="mt-6 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-700 mb-3">거래 요약</h4>
+                                <div className="flex flex-wrap gap-2">
+                                    {Object.entries(result.trade_summary).map(([action, cnt]) => (
+                                        <span key={action} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-gray-50 text-sm border border-gray-100">
+                                            <span className="font-bold text-gray-800">{action}</span>
+                                            <span className="text-gray-500">{cnt}회</span>
+                                        </span>
+                                    ))}
+                                    {metrics.total_friction !== undefined && (
+                                        <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 text-sm border border-red-100">
+                                            <span className="font-bold text-red-700">마찰비용</span>
+                                            <span className="text-red-600">{formatKRW(metrics.total_friction as number)}원</span>
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-700 mb-3">국면 이력</h4>
+                                <div className="flex gap-3">
+                                    <div className="flex-1 rounded-lg bg-emerald-50 border border-emerald-100 p-3 text-center">
+                                        <div className="text-2xl font-bold text-emerald-700">{result.regime_summary.BULL}</div>
+                                        <div className="text-xs text-emerald-600 mt-1">BULL 국면</div>
+                                    </div>
+                                    <div className="flex-1 rounded-lg bg-red-50 border border-red-100 p-3 text-center">
+                                        <div className="text-2xl font-bold text-red-700">{result.regime_summary.BEAR}</div>
+                                        <div className="text-xs text-red-600 mt-1">BEAR 국면</div>
+                                    </div>
+                                    <div className="flex-1 rounded-lg bg-gray-50 border border-gray-100 p-3 text-center">
+                                        <div className="text-2xl font-bold text-gray-700">
+                                            {result.regime_summary.BULL + result.regime_summary.BEAR}
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-1">총 리밸런싱</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                            <div className="flex items-center justify-between text-xs text-gray-400">
+                                <span>
+                                    {result.config.weight_method === 'inverse_volatility' ? '변동성 역가중' : '동일 비중'} |
+                                    Top-{result.config.top_n} |
+                                    초기자본 {formatKRW(result.config.initial_capital)}원
+                                </span>
+                                <span>{result.timestamp} | {result.elapsed_sec}초 소요</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Equity Curve */}
+                    {chartData.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <button
+                                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                                onClick={() => setShowChart(!showChart)}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <Activity className="w-5 h-5 text-amber-500" />
+                                    <span className="text-lg font-bold text-gray-800">자산 가치 곡선 (Equity Curve)</span>
+                                </div>
+                                {showChart ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                            </button>
+                            {showChart && (
+                                <div className="px-6 pb-6">
+                                    <ResponsiveContainer width="100%" height={320}>
+                                        <AreaChart data={chartData}>
+                                            <defs>
+                                                <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.3} />
+                                                    <stop offset="95%" stopColor="#f59e0b" stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                            <XAxis dataKey="displayDate" tick={{ fontSize: 11, fill: '#94a3b8' }}
+                                                interval={Math.max(1, Math.floor(chartData.length / 10))} />
+                                            <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }}
+                                                tickFormatter={(v: number) => formatKRW(v)} width={72} />
+                                            <Tooltip
+                                                formatter={(val: unknown) => [formatKRW(Number(val)) + '원', '자산가치']}
+                                                labelFormatter={(label: unknown) => `날짜: ${label}`}
+                                                contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: 12 }}
+                                            />
+                                            <ReferenceLine y={result.config.initial_capital} stroke="#94a3b8" strokeDasharray="5 5"
+                                                label={{ value: '초기자본', position: 'left', fill: '#94a3b8', fontSize: 10 }} />
+                                            <Area type="monotone" dataKey="value" stroke="#f59e0b" strokeWidth={2} fill="url(#equityGrad)" />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+
+                                    <div className="mt-4 pt-4 border-t border-gray-100">
+                                        <h4 className="text-sm font-bold text-gray-600 mb-2">낙폭 (Drawdown)</h4>
+                                        <ResponsiveContainer width="100%" height={140}>
+                                            <AreaChart data={drawdownData}>
+                                                <defs>
+                                                    <linearGradient id="ddGrad" x1="0" y1="0" x2="0" y2="1">
+                                                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+                                                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+                                                    </linearGradient>
+                                                </defs>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                                <XAxis dataKey="displayDate" tick={{ fontSize: 10, fill: '#94a3b8' }}
+                                                    interval={Math.max(1, Math.floor(drawdownData.length / 10))} />
+                                                <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }}
+                                                    tickFormatter={(v: number) => v.toFixed(1) + '%'} width={52} />
+                                                <Tooltip
+                                                    formatter={(val: unknown) => [Number(val).toFixed(2) + '%', '낙폭']}
+                                                    labelFormatter={(label: unknown) => `날짜: ${label}`}
+                                                    contentStyle={{ borderRadius: '8px', border: '1px solid #fecaca', fontSize: 12 }}
+                                                />
+                                                <ReferenceLine y={0} stroke="#94a3b8" />
+                                                <Area type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={1.5} fill="url(#ddGrad)" />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Log Viewer */}
+            <LogViewer status={status} label="Backtest" />
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
+//  Main Panel (Dual Tab)
+// ═══════════════════════════════════════════════════
+
+export default function MomentumPanel() {
+    const [activeMode, setActiveMode] = useState<'screener' | 'backtest'>('screener');
+
+    return (
+        <div className="space-y-6">
+            {/* Mode Toggle */}
+            <div className="flex gap-2 bg-white rounded-xl shadow-sm border border-gray-100 p-2">
+                <button
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-sm transition-all ${activeMode === 'screener'
+                        ? 'bg-amber-100 text-amber-800 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                    onClick={() => setActiveMode('screener')}
+                >
+                    <Search className="w-4 h-4" />
+                    모멘텀 스크리너
+                </button>
+                <button
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-sm transition-all ${activeMode === 'backtest'
+                        ? 'bg-amber-100 text-amber-800 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                    onClick={() => setActiveMode('backtest')}
+                >
+                    <TrendingUp className="w-4 h-4" />
+                    모멘텀 백테스트
+                </button>
+            </div>
+
+            {/* Tab Content */}
+            {activeMode === 'screener' ? <ScreenerTab /> : <BacktestTab />}
+        </div>
+    );
+}
