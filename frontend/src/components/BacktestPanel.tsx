@@ -63,10 +63,10 @@ export default function BacktestPanel() {
         return () => clearInterval(id);
     }, [strategy]);
 
-    // Auto-scroll logs
+    // Auto-scroll logs (only while running)
     useEffect(() => {
-        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-    }, [status.logs]);
+        if (status.status === 'running' && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    }, [status.logs, status.status]);
 
     const startBacktest = () => {
         const payload: Record<string, unknown> = {

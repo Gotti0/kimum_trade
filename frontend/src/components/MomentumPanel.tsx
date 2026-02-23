@@ -203,8 +203,8 @@ function LogViewer({ status, label }: { status: PipelineStatus; label: string })
     const logRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
-        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-    }, [status.logs]);
+        if (status.status === 'running' && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    }, [status.logs, status.status]);
 
     return (
         <div className="bg-gray-900 rounded-xl shadow-2xl border border-gray-800 overflow-hidden">

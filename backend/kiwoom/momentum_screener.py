@@ -43,11 +43,16 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 
 
 def _load_stock_map() -> dict[str, str]:
-    """cache/stock_map.json에서 종목코드 -> 종목명 매핑을 로드합니다."""
+    """cache/stock_map.json에서 종목코드 -> 종목명 매핑을 로드합니다.
+
+    stock_map.json은 { 종목명: 종목코드 } 형식이므로 역전하여 반환합니다.
+    """
     if os.path.isfile(STOCK_MAP_FILE):
         try:
             with open(STOCK_MAP_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                name_to_code = json.load(f)
+                # { 종목명 -> 종목코드 } → { 종목코드 -> 종목명 } 역전
+                return {code: name for name, code in name_to_code.items()}
         except Exception:
             pass
     return {}

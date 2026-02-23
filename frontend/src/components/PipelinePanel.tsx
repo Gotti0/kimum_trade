@@ -44,10 +44,11 @@ export default function PipelinePanel() {
             .catch(() => { });
     }, []);
 
-    // Auto-scroll logs
+    // Auto-scroll logs (only while running)
+    const activeStatus = pipelines.find(p => p.name === activeLog);
     useEffect(() => {
-        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-    }, [pipelines, activeLog]);
+        if (activeStatus?.status === 'running' && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+    }, [pipelines, activeLog, activeStatus?.status]);
 
     const getStatus = useCallback(
         (name: string) => pipelines.find(p => p.name === name) || { name, status: 'idle' as const, logs: [] },
