@@ -106,8 +106,8 @@ class StopRequest(BaseModel):
 class KiwoomBacktestRequest(BaseModel):
     days: int = 99
     capital: float = 10_000_000
-    strategy: str = "legacy"  # "legacy" or "swing"
-    mode: str = "daily"       # "daily" or "minute" (스윙용)
+    strategy: str = "legacy"  # "legacy", "swing", or "pullback"
+    mode: str = "daily"       # "daily" or "minute"
 
 
 # ── Endpoints ──
@@ -190,7 +190,7 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
         raise HTTPException(status_code=404, detail="backtester.py not found")
     
     # Run as a module to avoid import errors
-    strategy = req.strategy if req.strategy in ("legacy", "swing") else "legacy"
+    strategy = req.strategy if req.strategy in ("legacy", "swing", "pullback") else "legacy"
     mode = req.mode if req.mode in ("daily", "minute") else "daily"
     cmd = [
         VPANDA_PYTHON, "-m", "backend.kiwoom.backtester",
@@ -205,12 +205,14 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
 
 class ScreenerRequest(BaseModel):
     top_n: int = 30
+    strategy: str = "swing"
 
 
 @router.post("/screener")
 async def run_screener(req: ScreenerRequest):
     """Run Alpha Filter Screener."""
-    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.alpha_screener", "--top_n", str(req.top_n)]
+    strategy = req.strategy if req.strategy in ("swing", "pullback") else "swing"
+    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.alpha_screener", "--top_n", str(req.top_n), "--strategy", strategy]
     ok = pm.start("alpha-screener", cmd)
     if not ok:
         return {"message": "Screener is already running", "status": "running"}

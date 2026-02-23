@@ -4,7 +4,7 @@ import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
 
-type Strategy = 'legacy' | 'swing';
+type Strategy = 'legacy' | 'swing' | 'pullback';
 
 interface PipelineStatus {
     name: string;
@@ -29,6 +29,13 @@ const STRATEGY_CONFIG = {
         icon: BarChart3,
         pipelineName: 'kiwoom-backtest',
     },
+    pullback: {
+        label: '스윙-풀백',
+        desc: '급등 후 눌림목 감지 + 분할 익절 (최신 전략)',
+        color: 'emerald',
+        icon: Shield,
+        pipelineName: 'kiwoom-backtest',
+    }
 } as const;
 
 export default function BacktestPanel() {
@@ -59,7 +66,7 @@ export default function BacktestPanel() {
     }, [status.logs]);
 
     const startBacktest = () => {
-        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy, mode: strategy === 'swing' ? mode : 'daily' })
+        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy, mode: (strategy === 'swing' || strategy === 'pullback') ? mode : 'daily' })
             .catch(err => alert('실행 실패: ' + err.message));
     };
 
@@ -77,6 +84,10 @@ export default function BacktestPanel() {
         violet: {
             bg: 'bg-violet-100', text: 'text-violet-600', btn: 'bg-violet-600 hover:bg-violet-700 shadow-violet-200',
             border: 'border-violet-200', ring: 'focus:ring-violet-500', selectBg: 'bg-violet-50 border-violet-300 ring-1 ring-violet-200',
+        },
+        emerald: {
+            bg: 'bg-emerald-100', text: 'text-emerald-600', btn: 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200',
+            border: 'border-emerald-200', ring: 'focus:ring-emerald-500', selectBg: 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-200',
         },
     };
     const accent = accentMap[cfg.color];
@@ -156,60 +167,77 @@ export default function BacktestPanel() {
                 </div>
 
                 {/* Swing Strategy Info Card */}
-                {strategy === 'swing' && (
-                    <div className="mb-6 bg-violet-50/50 rounded-xl border border-violet-100 p-4">
+                {(strategy === 'swing' || strategy === 'pullback') && (
+                    <div className={`mb-6 rounded-xl border p-4 ${strategy === 'pullback' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-violet-50/50 border-violet-100'}`}>
                         <div className="flex items-center gap-2 mb-3">
-                            <Shield className="w-4 h-4 text-violet-500" />
-                            <span className="text-sm font-bold text-violet-700">스윙 전략 파라미터</span>
+                            <Shield className={`w-4 h-4 ${strategy === 'pullback' ? 'text-emerald-500' : 'text-violet-500'}`} />
+                            <span className={`text-sm font-bold ${strategy === 'pullback' ? 'text-emerald-700' : 'text-violet-700'}`}>
+                                {strategy === 'pullback' ? '풀백 전략 파라미터' : '스윙 전략 파라미터'}
+                            </span>
                         </div>
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
                                 <div className="text-gray-500">ATR 기간</div>
-                                <div className="font-bold text-gray-800 mt-0.5">5일</div>
+                                <div className="font-bold text-gray-800 mt-0.5">{strategy === 'pullback' ? '14일' : '5일'}</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-                                <div className="text-gray-500">스톱 승수</div>
-                                <div className="font-bold text-gray-800 mt-0.5">×2.5</div>
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
+                                <div className="text-gray-500">{strategy === 'pullback' ? '스톱 / 익절' : '스톱 승수'}</div>
+                                <div className="font-bold text-gray-800 mt-0.5">{strategy === 'pullback' ? '×1.2 / ×1.5' : '×2.5'}</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
                                 <div className="text-gray-500">최대 보유</div>
-                                <div className="font-bold text-gray-800 mt-0.5">5일</div>
+                                <div className="font-bold text-gray-800 mt-0.5">{strategy === 'pullback' ? '7일' : '5일'}</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
                                 <div className="text-gray-500">마찰 비용</div>
                                 <div className="font-bold text-gray-800 mt-0.5">0.345%</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
                                 <div className="text-gray-500">슬롯 수</div>
                                 <div className="font-bold text-gray-800 mt-0.5">10개</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
+                            <div className={`bg-white rounded-lg p-2.5 border ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
                                 <div className="text-gray-500">RPT</div>
                                 <div className="font-bold text-gray-800 mt-0.5">1.5%</div>
                             </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-                                <div className="text-gray-500">RVOL 허들</div>
-                                <div className="font-bold text-gray-800 mt-0.5">≥2.5</div>
-                            </div>
-                            <div className="bg-white rounded-lg p-2.5 border border-violet-100">
-                                <div className="text-gray-500">이격도 캡</div>
-                                <div className="font-bold text-gray-800 mt-0.5">100~112</div>
-                            </div>
+                            {strategy === 'pullback' ? (
+                                <>
+                                    <div className={`bg-white rounded-lg p-2.5 border border-emerald-100`}>
+                                        <div className="text-gray-500">VCR 조건</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">≤ 0.35</div>
+                                    </div>
+                                    <div className={`bg-white rounded-lg p-2.5 border border-emerald-100`}>
+                                        <div className="text-gray-500">FRL 조건</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">0.382 ~ 0.618</div>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className={`bg-white rounded-lg p-2.5 border border-violet-100`}>
+                                        <div className="text-gray-500">RVOL 허들</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">≥2.5</div>
+                                    </div>
+                                    <div className={`bg-white rounded-lg p-2.5 border border-violet-100`}>
+                                        <div className="text-gray-500">이격도 캡</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">100~112</div>
+                                    </div>
+                                </>
+                            )}
                         </div>
 
-                        {/* Mode Selection for Swing */}
-                        <div className="mt-4 pt-4 border-t border-violet-100 flex items-center justify-between">
-                            <div className="text-sm font-medium text-violet-800">데이터 모드</div>
-                            <div className="flex bg-white rounded-lg border border-violet-200 overflow-hidden divide-x divide-violet-100">
+                        {/* Mode Selection for Swing/Pullback */}
+                        <div className={`mt-4 pt-4 border-t flex items-center justify-between ${strategy === 'pullback' ? 'border-emerald-100' : 'border-violet-100'}`}>
+                            <div className={`text-sm font-medium ${strategy === 'pullback' ? 'text-emerald-800' : 'text-violet-800'}`}>데이터 모드</div>
+                            <div className={`flex bg-white rounded-lg border overflow-hidden divide-x ${strategy === 'pullback' ? 'border-emerald-200 divide-emerald-100' : 'border-violet-200 divide-violet-100'}`}>
                                 <button
                                     onClick={() => setMode('daily')}
-                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'daily' ? 'bg-violet-100 text-violet-800' : 'text-gray-500 hover:bg-violet-50'}`}
+                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'daily' ? (strategy === 'pullback' ? 'bg-emerald-100 text-emerald-800' : 'bg-violet-100 text-violet-800') : `text-gray-500 ${strategy === 'pullback' ? 'hover:bg-emerald-50' : 'hover:bg-violet-50'}`}`}
                                 >
                                     일봉 전용 (장기)
                                 </button>
                                 <button
                                     onClick={() => setMode('minute')}
-                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'minute' ? 'bg-violet-100 text-violet-800' : 'text-gray-500 hover:bg-violet-50'}`}
+                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'minute' ? (strategy === 'pullback' ? 'bg-emerald-100 text-emerald-800' : 'bg-violet-100 text-violet-800') : `text-gray-500 ${strategy === 'pullback' ? 'hover:bg-emerald-50' : 'hover:bg-violet-50'}`}`}
                                 >
                                     분봉 기반 (~60일)
                                 </button>
@@ -262,7 +290,7 @@ export default function BacktestPanel() {
                         disabled={isRunning}
                     >
                         <Play className="w-5 h-5" />
-                        {strategy === 'swing' ? '스윙 백테스팅 시작' : '백테스팅 시작'}
+                        {strategy === 'swing' ? '스윙 백테스팅 시작' : strategy === 'pullback' ? '스윙-풀백 백테스팅 시작' : '백테스팅 시작'}
                     </button>
                     <button
                         className="flex items-center justify-center px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
@@ -280,7 +308,7 @@ export default function BacktestPanel() {
                     <div className="flex items-center gap-2">
                         <Terminal className="w-4 h-4 text-blue-400" />
                         <span className="text-sm font-bold text-gray-300">
-                            Execution Logs {strategy === 'swing' && <span className="text-violet-400 text-xs ml-1">[Swing]</span>}
+                            Execution Logs {(strategy === 'swing' || strategy === 'pullback') && <span className={`${strategy === 'pullback' ? 'text-emerald-400' : 'text-violet-400'} text-xs ml-1`}>[{strategy === 'pullback' ? 'Pullback' : 'Swing'}]</span>}
                         </span>
                     </div>
                     <div className="text-[10px] text-gray-500 font-mono">

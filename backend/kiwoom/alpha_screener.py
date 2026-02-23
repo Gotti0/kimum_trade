@@ -17,6 +17,7 @@ from datetime import datetime
 
 from backend.kiwoom.theme_finder import TopThemeFinder
 from backend.kiwoom.alpha_filter import AlphaFilter, compute_all_indicators
+from backend.kiwoom.pullback_alpha_filter import PullbackAlphaFilter, compute_pullback_indicators
 from backend.kiwoom.sell_strategy import _parse_price, compute_atr
 
 logger = logging.getLogger(__name__)
@@ -30,20 +31,24 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 API_DELAY = 0.35
 
 
-def run_screener(top_n: int = 30) -> dict:
-    """알파 필터 스크리너를 실행합니다.
+def run_screener(top_n: int = 30, strategy: str = "swing") -> dict:
+    """알파 필터 또는 스윙-풀백 스크리너를 실행합니다.
 
     Args:
         top_n: 상위 몇 개 테마를 조회할지.
+        strategy: "swing" 또는 "pullback"
 
     Returns:
         스크리닝 결과 딕셔너리.
     """
     finder = TopThemeFinder()
-    alpha_filter = AlphaFilter()
+    if strategy == "pullback":
+        alpha_filter = PullbackAlphaFilter()
+    else:
+        alpha_filter = AlphaFilter()
 
     logger.info("=" * 60)
-    logger.info("  알파 필터 스크리너 시작")
+    logger.info("  %s 스크리너 시작", "풀백(Pullback)" if strategy == "pullback" else "알파(Swing)")
     logger.info("  상위 %d개 테마 조회", top_n)
     logger.info("=" * 60)
 
@@ -106,31 +111,55 @@ def run_screener(top_n: int = 30) -> dict:
 
     # 결과 포맷팅
     screened_results: list[dict] = []
-    for stk in passed_stocks:
-        indicators = stk.get("indicators", {})
-        stk_cd = stk.get("stk_cd", "")
+    
+    if strategy == "pullback":
+        for stk in passed_stocks:
+            indicators = stk.get("pullback_indicators", {})
+            stk_cd = stk.get("stk_cd", "")
+            bars = daily_bars_map.get(stk_cd, [])
+            atr = compute_atr(bars, 14)
 
-        # ATR 추가 계산
-        bars = daily_bars_map.get(stk_cd, [])
-        atr = compute_atr(bars, 5)
+            # pullback 지표 매핑을 기존 포맷과 유사하게 맞춰 UI 호환성을 유지합니다
+            # vcr은 당일 거래량에 대한 지표이지만, 임시로 남는 필드에 표시
+            screened_results.append({
+                "stk_cd": stk_cd,
+                "stk_nm": stk.get("stk_nm", "?"),
+                "theme_nm": stk.get("theme_nm", ""),
+                "close": float(bars[-1].get("cur_prc", 0)) if bars else 0,
+                "daily_return": round(indicators.get("surge_return", 0) or 0, 2), # UI에 급등 수익률 표시
+                "sma10": 0, # Pullback엔 없음
+                "ema20": 0,
+                "sma20": round(indicators.get("vcr", 0) or 0, 2), # UI sma20 위치에 VCR 표시 
+                "disparity20": round(indicators.get("disparity_5", 0) or 0, 2), # 5일 이격도
+                "adtv20": round((indicators.get("adtv20", 0) or 0) / 1e8, 1),
+                "rvol": round(indicators.get("surge_rvol", 0) or 0, 2), # surge rvol
+                "atr5": round(atr or 0, 0),
+                "market_cap": round(indicators.get("frl", 0) or 0, 3), # UI market_cap 위치에 FRL 표시
+            })
+    else:
+        for stk in passed_stocks:
+            indicators = stk.get("indicators", {})
+            stk_cd = stk.get("stk_cd", "")
+            bars = daily_bars_map.get(stk_cd, [])
+            atr = compute_atr(bars, 5)
 
-        screened_results.append({
-            "stk_cd": stk_cd,
-            "stk_nm": stk.get("stk_nm", "?"),
-            "theme_nm": stk.get("theme_nm", ""),
-            "close": indicators.get("close", 0),
-            "daily_return": round(indicators.get("daily_return", 0) or 0, 2),
-            "sma10": round(indicators.get("sma10", 0) or 0, 0),
-            "ema20": round(indicators.get("ema20", 0) or 0, 0),
-            "sma20": round(indicators.get("sma20", 0) or 0, 0),
-            "disparity20": round(indicators.get("disparity20", 0) or 0, 2),
-            "adtv20": round((indicators.get("adtv20", 0) or 0) / 1e8, 1),  # 억 단위
-            "rvol": round(indicators.get("rvol", 0) or 0, 2),
-            "atr5": round(atr or 0, 0),
-            "market_cap": round((indicators.get("market_cap", 0) or 0) / 1e8, 0),  # 억 단위
-        })
+            screened_results.append({
+                "stk_cd": stk_cd,
+                "stk_nm": stk.get("stk_nm", "?"),
+                "theme_nm": stk.get("theme_nm", ""),
+                "close": indicators.get("close", 0),
+                "daily_return": round(indicators.get("daily_return", 0) or 0, 2),
+                "sma10": round(indicators.get("sma10", 0) or 0, 0),
+                "ema20": round(indicators.get("ema20", 0) or 0, 0),
+                "sma20": round(indicators.get("sma20", 0) or 0, 0),
+                "disparity20": round(indicators.get("disparity20", 0) or 0, 2),
+                "adtv20": round((indicators.get("adtv20", 0) or 0) / 1e8, 1),
+                "rvol": round(indicators.get("rvol", 0) or 0, 2),
+                "atr5": round(atr or 0, 0),
+                "market_cap": round((indicators.get("market_cap", 0) or 0) / 1e8, 0),
+            })
 
-    # 수익률 기준 내림차순 정렬
+    # 수익률(또는 surge_return) 기준 내림차순 정렬
     screened_results.sort(key=lambda x: x.get("daily_return", 0), reverse=True)
 
     # 모든 후보의 필터 결과 (탈락 포함)
@@ -148,17 +177,30 @@ def run_screener(top_n: int = 30) -> dict:
             })
             continue
 
-        indicators = compute_all_indicators(bars)
-        passed, reasons = alpha_filter.apply_all_filters(indicators)
-        all_filter_results.append({
-            "stk_cd": stk_cd,
-            "stk_nm": stk.get("stk_nm", "?"),
-            "theme_nm": stk.get("theme_nm", ""),
-            "passed": passed,
-            "reason": reasons[-1] if reasons else "",
-            "close": indicators.get("close", 0),
-            "daily_return": round(indicators.get("daily_return", 0) or 0, 2),
-        })
+        if strategy == "pullback":
+            indicators = compute_pullback_indicators(bars)
+            passed, reasons = alpha_filter.apply_all_filters(indicators)
+            all_filter_results.append({
+                "stk_cd": stk_cd,
+                "stk_nm": stk.get("stk_nm", "?"),
+                "theme_nm": stk.get("theme_nm", ""),
+                "passed": passed,
+                "reason": reasons[-1] if reasons else "",
+                "close": float(bars[-1].get("cur_prc", 0)) if bars else 0,
+                "daily_return": round(indicators.get("surge_return", 0) or 0, 2),
+            })
+        else:
+            indicators = compute_all_indicators(bars)
+            passed, reasons = alpha_filter.apply_all_filters(indicators)
+            all_filter_results.append({
+                "stk_cd": stk_cd,
+                "stk_nm": stk.get("stk_nm", "?"),
+                "theme_nm": stk.get("theme_nm", ""),
+                "passed": passed,
+                "reason": reasons[-1] if reasons else "",
+                "close": indicators.get("close", 0),
+                "daily_return": round(indicators.get("daily_return", 0) or 0, 2),
+            })
 
     result = {
         "timestamp": datetime.now().isoformat(),
@@ -197,6 +239,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="알파 필터 스크리너")
     parser.add_argument("--top_n", type=int, default=30, help="상위 테마 수 (기본: 30)")
+    parser.add_argument("--strategy", type=str, default="swing", choices=["swing", "pullback"], help="스크리닝 전략 (swing 또는 pullback)")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -212,4 +255,4 @@ if __name__ == "__main__":
         ],
     )
 
-    run_screener(top_n=args.top_n)
+    run_screener(top_n=args.top_n, strategy=args.strategy)

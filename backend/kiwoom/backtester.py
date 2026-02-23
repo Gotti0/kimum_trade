@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 from backend.kiwoom.theme_finder import TopThemeFinder
 from backend.kiwoom.sell_strategy import SellStrategyEngine, _parse_price
+from backend.kiwoom.pullback_backtester import PullbackBacktester
 
 logger = logging.getLogger(__name__)
 
@@ -941,8 +942,8 @@ if __name__ == "__main__":
         "--strategy",
         type=str,
         default="legacy",
-        choices=["legacy", "swing"],
-        help="전략 선택: legacy(기존 1일), swing(스윙 3~5일)"
+        choices=["legacy", "swing", "pullback"],
+        help="전략 선택: legacy(기존 1일), swing(스윙 3~5일), pullback(스윙-풀백)"
     )
     parser.add_argument(
         "--mode",
@@ -969,6 +970,12 @@ if __name__ == "__main__":
 
     if args.strategy == "swing":
         backtester = SwingBacktester(initial_capital=args.capital)
+        result = backtester.run(
+            start_days_ago=args.days,
+            use_daily_only=(args.mode == "daily"),
+        )
+    elif args.strategy == "pullback":
+        backtester = PullbackBacktester(initial_capital=args.capital)
         result = backtester.run(
             start_days_ago=args.days,
             use_daily_only=(args.mode == "daily"),

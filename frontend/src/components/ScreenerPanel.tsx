@@ -51,6 +51,7 @@ export default function ScreenerPanel() {
     const [status, setStatus] = useState<PipelineStatus>({ name: 'alpha-screener', status: 'idle', logs: [] });
     const [data, setData] = useState<ScreenerData | null>(null);
     const [topN, setTopN] = useState(30);
+    const [strategy, setStrategy] = useState<'swing' | 'pullback'>('swing');
     const [showLogs, setShowLogs] = useState(false);
     const [showRejected, setShowRejected] = useState(false);
     const [sortField, setSortField] = useState<'daily_return' | 'rvol' | 'disparity20' | 'adtv20'>('daily_return');
@@ -95,7 +96,7 @@ export default function ScreenerPanel() {
     };
 
     const startScreener = () => {
-        axios.post(`${API}/screener`, { top_n: topN })
+        axios.post(`${API}/screener`, { top_n: topN, strategy })
             .catch(err => alert('실행 실패: ' + err.message));
     };
 
@@ -139,8 +140,14 @@ export default function ScreenerPanel() {
                             <Filter className="w-6 h-6 text-emerald-600" />
                         </div>
                         <div>
-                            <h2 className="text-xl font-bold text-gray-800">알파 필터 스크리너</h2>
-                            <p className="text-sm text-gray-500">유동성 → RVOL → 모멘텀 → 이격도 4단계 필터링</p>
+                            <h2 className="text-xl font-bold text-gray-800">
+                                {strategy === 'pullback' ? '스윙-풀백 스크리너' : '알파 필터 스크리너'}
+                            </h2>
+                            <p className="text-sm text-gray-500">
+                                {strategy === 'pullback'
+                                    ? '유동성 → 급등(Surge) → 거래량 감소율(VCR) → 피보나치 되돌림(FRL) → 이격도(Disp)'
+                                    : '유동성 → RVOL → 모멘텀 → 이격도 4단계 필터링'}
+                            </p>
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -160,28 +167,65 @@ export default function ScreenerPanel() {
 
                 {/* Filter Criteria Summary */}
                 <div className="mb-6 bg-gray-50 rounded-xl border border-gray-100 p-4">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                        <div className="bg-white rounded-lg p-2.5 border border-gray-100">
-                            <div className="text-gray-500">① 유동성</div>
-                            <div className="font-bold text-gray-800 mt-0.5">ADTV ≥ 50억, 시총 ≥ 3000억</div>
+                    {strategy === 'pullback' ? (
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">① 유동성/급등</div>
+                                <div className="font-bold text-gray-800 mt-0.5">RVOL≥3, 수익률≥10%</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">② 기간</div>
+                                <div className="font-bold text-gray-800 mt-0.5">최근 5일 이내 급등</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">③ VCR(거래량)</div>
+                                <div className="font-bold text-gray-800 mt-0.5">당일/급등일 ≤ 35%</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">④ FRL(피보나치)</div>
+                                <div className="font-bold text-gray-800 mt-0.5">0.382 ~ 0.618</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">⑤ Disparity</div>
+                                <div className="font-bold text-gray-800 mt-0.5">-2% ~ +2% (5일 EMA)</div>
+                            </div>
                         </div>
-                        <div className="bg-white rounded-lg p-2.5 border border-gray-100">
-                            <div className="text-gray-500">② RVOL</div>
-                            <div className="font-bold text-gray-800 mt-0.5">당일 거래대금 / 20일 ADTV ≥ 1.5</div>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">① 유동성</div>
+                                <div className="font-bold text-gray-800 mt-0.5">ADTV ≥ 50억, 시총 ≥ 3000억</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">② RVOL</div>
+                                <div className="font-bold text-gray-800 mt-0.5">당일 거래대금 / 20일 ADTV ≥ 1.5</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">③ 모멘텀</div>
+                                <div className="font-bold text-gray-800 mt-0.5">종가 {'>'} SMA10 & EMA20, 수익률 ≥ 4%</div>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <div className="text-gray-500">④ 이격도</div>
+                                <div className="font-bold text-gray-800 mt-0.5">100 {'<'} (종가/SMA20×100) ≤ 120</div>
+                            </div>
                         </div>
-                        <div className="bg-white rounded-lg p-2.5 border border-gray-100">
-                            <div className="text-gray-500">③ 모멘텀</div>
-                            <div className="font-bold text-gray-800 mt-0.5">종가 {'>'} SMA10 & EMA20, 수익률 ≥ 4%</div>
-                        </div>
-                        <div className="bg-white rounded-lg p-2.5 border border-gray-100">
-                            <div className="text-gray-500">④ 이격도</div>
-                            <div className="font-bold text-gray-800 mt-0.5">100 {'<'} (종가/SMA20×100) ≤ 120</div>
-                        </div>
-                    </div>
+                    )}
                 </div>
 
                 {/* Controls Row */}
-                <div className="flex items-end gap-4">
+                <div className="flex flex-wrap items-end gap-4">
+                    <div className="flex-shrink-0">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">전략</label>
+                        <select
+                            className="bg-white border border-gray-200 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-emerald-500 outline-none text-sm"
+                            value={strategy}
+                            onChange={e => setStrategy(e.target.value as any)}
+                            disabled={isRunning}
+                        >
+                            <option value="swing">스윙-상따</option>
+                            <option value="pullback">스윙-풀백</option>
+                        </select>
+                    </div>
                     <div className="flex-shrink-0">
                         <label className="block text-sm font-medium text-gray-700 mb-1">상위 테마 수</label>
                         <input
@@ -191,6 +235,7 @@ export default function ScreenerPanel() {
                             className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-emerald-500 outline-none"
                             value={topN}
                             onChange={e => setTopN(Number(e.target.value))}
+                            disabled={isRunning}
                         />
                     </div>
                     <button
@@ -264,20 +309,22 @@ export default function ScreenerPanel() {
                                     <th className="px-3 py-2 text-left">테마</th>
                                     <th className="px-3 py-2 text-right">종가</th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('daily_return')}>
-                                        수익률 <SortIcon field="daily_return" />
+                                        {strategy === 'pullback' ? '급등 수익률' : '수익률'} <SortIcon field="daily_return" />
                                     </th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('rvol')}>
-                                        RVOL <SortIcon field="rvol" />
+                                        {strategy === 'pullback' ? '급등 RVOL' : 'RVOL'} <SortIcon field="rvol" />
                                     </th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('disparity20')}>
-                                        이격도 <SortIcon field="disparity20" />
+                                        {strategy === 'pullback' ? '이격(5일)' : '이격도'} <SortIcon field="disparity20" />
                                     </th>
-                                    <th className="px-3 py-2 text-right">SMA10</th>
-                                    <th className="px-3 py-2 text-right">EMA20</th>
+                                    {strategy !== 'pullback' && <th className="px-3 py-2 text-right">SMA10</th>}
+                                    {strategy !== 'pullback' && <th className="px-3 py-2 text-right">EMA20</th>}
+                                    {strategy === 'pullback' && <th className="px-3 py-2 text-right">VCR</th>}
+                                    {strategy === 'pullback' && <th className="px-3 py-2 text-right">FRL</th>}
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('adtv20')}>
                                         ADTV(억) <SortIcon field="adtv20" />
                                     </th>
-                                    <th className="px-3 py-2 text-right">ATR(5)</th>
+                                    <th className="px-3 py-2 text-right">ATR({strategy === 'pullback' ? '14' : '5'})</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-50">
@@ -309,12 +356,26 @@ export default function ScreenerPanel() {
                                         <td className="px-3 py-2.5 text-right font-mono text-gray-700">
                                             {stk.disparity20.toFixed(1)}
                                         </td>
-                                        <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
-                                            {stk.sma10.toLocaleString()}
-                                        </td>
-                                        <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
-                                            {stk.ema20.toLocaleString()}
-                                        </td>
+                                        {strategy !== 'pullback' && (
+                                            <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
+                                                {stk.sma10.toLocaleString()}
+                                            </td>
+                                        )}
+                                        {strategy !== 'pullback' && (
+                                            <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
+                                                {stk.ema20.toLocaleString()}
+                                            </td>
+                                        )}
+                                        {strategy === 'pullback' && (
+                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold ${stk.sma20 <= 0.35 ? 'text-blue-600' : 'text-gray-500'}`}>
+                                                {stk.sma20.toFixed(2)}
+                                            </td>
+                                        )}
+                                        {strategy === 'pullback' && (
+                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold text-gray-700`}>
+                                                {stk.market_cap.toFixed(3)}
+                                            </td>
+                                        )}
                                         <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
                                             {stk.adtv20.toLocaleString()}
                                         </td>
