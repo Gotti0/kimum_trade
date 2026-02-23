@@ -108,6 +108,9 @@ class KiwoomBacktestRequest(BaseModel):
     capital: float = 10_000_000
     strategy: str = "legacy"  # "legacy", "swing", or "pullback"
     mode: str = "daily"       # "daily" or "minute"
+    volume_top_n: int = 100   # [pullback] 거래량 상위 N 유니버스
+    slippage_bps: float = 10.0    # [pullback] 매수·익절 슬리피지 (bp)
+    stop_slippage_bps: float = 20.0  # [pullback] 손절 슬리피지 (bp)
 
 
 # ── Endpoints ──
@@ -195,7 +198,10 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     cmd = [
         VPANDA_PYTHON, "-m", "backend.kiwoom.backtester",
         str(req.days), "--capital", str(req.capital),
-        "--strategy", strategy, "--mode", mode
+        "--strategy", strategy, "--mode", mode,
+        "--volume-top-n", str(req.volume_top_n),
+        "--slippage-bps", str(req.slippage_bps),
+        "--stop-slippage-bps", str(req.stop_slippage_bps),
     ]
     ok = pm.start("kiwoom-backtest", cmd)
     if not ok:

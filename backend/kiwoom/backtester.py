@@ -952,6 +952,27 @@ if __name__ == "__main__":
         choices=["daily", "minute"],
         help="데이터 모드: daily(일봉 전용, 장기 가능), minute(분봉 기반, ~60일)"
     )
+    parser.add_argument(
+        "--volume-top-n",
+        type=int,
+        default=100,
+        dest="volume_top_n",
+        help="[pullback] 거래량 상위 N 종목 유니버스 (기본값: 100)"
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=10.0,
+        dest="slippage_bps",
+        help="[pullback] 매수·익절 슬리피지 bp (기본값: 10 = 0.1%%)"
+    )
+    parser.add_argument(
+        "--stop-slippage-bps",
+        type=float,
+        default=20.0,
+        dest="stop_slippage_bps",
+        help="[pullback] 손절 슬리피지 bp (기본값: 20 = 0.2%%)"
+    )
     
     args = parser.parse_args()
 
@@ -975,7 +996,12 @@ if __name__ == "__main__":
             use_daily_only=(args.mode == "daily"),
         )
     elif args.strategy == "pullback":
-        backtester = PullbackBacktester(initial_capital=args.capital)
+        backtester = PullbackBacktester(
+            initial_capital=args.capital,
+            volume_top_n=args.volume_top_n,
+            slippage_bps=args.slippage_bps,
+            stop_slippage_bps=args.stop_slippage_bps,
+        )
         result = backtester.run(
             start_days_ago=args.days,
             use_daily_only=(args.mode == "daily"),

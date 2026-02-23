@@ -39,16 +39,24 @@ FRICTION_COST = 0.00345
 
 
 class PullbackBacktester:
-    def __init__(self, initial_capital: float = 10_000_000, volume_top_n: int = 100):
+    def __init__(
+        self,
+        initial_capital: float = 10_000_000,
+        volume_top_n: int = 100,
+        slippage_bps: float = 10.0,
+        stop_slippage_bps: float = 20.0,
+    ):
         self.finder = TopThemeFinder()
         
         self.alpha_filter = PullbackAlphaFilter()
-        self.buy_engine = PullbackBuyEngine(mode="daily")
+        self.buy_engine = PullbackBuyEngine(mode="daily", slippage_bps=slippage_bps)
         self.sell_engine = PullbackSellEngine(
             atr_period=14,
             stop_atr_multiplier=1.2,
             profit_atr_multiplier=1.5,
-            max_holding_days=7
+            max_holding_days=7,
+            slippage_bps=slippage_bps,
+            stop_slippage_bps=stop_slippage_bps,
         )
         
         self.regime_filter = RegimeFilter()

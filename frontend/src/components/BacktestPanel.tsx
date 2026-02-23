@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, Terminal, TrendingUp, DollarSign, Calendar, Zap, Shield, BarChart3 } from 'lucide-react';
+import { Play, Square, Terminal, TrendingUp, DollarSign, Calendar, Zap, Shield, BarChart3, SlidersHorizontal } from 'lucide-react';
 import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
@@ -31,7 +31,7 @@ const STRATEGY_CONFIG = {
     },
     pullback: {
         label: '스윙-풀백',
-        desc: '급등 후 눌림목 감지 + 분할 익절 (최신 전략)',
+        desc: '거래량 Top-N 유니버스 + 슬리피지 반영 (미래편향 제거)',
         color: 'emerald',
         icon: Shield,
         pipelineName: 'kiwoom-backtest',
@@ -44,6 +44,9 @@ export default function BacktestPanel() {
     const [status, setStatus] = useState<PipelineStatus>({ name: 'kiwoom-backtest', status: 'idle', logs: [] });
     const [days, setDays] = useState(10);
     const [capital, setCapital] = useState(10000000);
+    const [volumeTopN, setVolumeTopN] = useState(100);
+    const [slippageBps, setSlippageBps] = useState(10);
+    const [stopSlippageBps, setStopSlippageBps] = useState(20);
     const logRef = useRef<HTMLDivElement>(null);
 
     const cfg = STRATEGY_CONFIG[strategy];
@@ -66,7 +69,16 @@ export default function BacktestPanel() {
     }, [status.logs]);
 
     const startBacktest = () => {
-        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy, mode: (strategy === 'swing' || strategy === 'pullback') ? mode : 'daily' })
+        const payload: Record<string, unknown> = {
+            days, capital, strategy,
+            mode: (strategy === 'swing' || strategy === 'pullback') ? mode : 'daily',
+        };
+        if (strategy === 'pullback') {
+            payload.volume_top_n = volumeTopN;
+            payload.slippage_bps = slippageBps;
+            payload.stop_slippage_bps = stopSlippageBps;
+        }
+        axios.post(`${API}/kiwoom-backtest`, payload)
             .catch(err => alert('실행 실패: ' + err.message));
     };
 
@@ -203,12 +215,12 @@ export default function BacktestPanel() {
                             {strategy === 'pullback' ? (
                                 <>
                                     <div className={`bg-white rounded-lg p-2.5 border border-emerald-100`}>
-                                        <div className="text-gray-500">VCR 조건</div>
-                                        <div className="font-bold text-gray-800 mt-0.5">≤ 0.35</div>
+                                        <div className="text-gray-500">매수·익절 슬리피지</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">{slippageBps} bp ({(slippageBps / 100).toFixed(2)}%)</div>
                                     </div>
                                     <div className={`bg-white rounded-lg p-2.5 border border-emerald-100`}>
-                                        <div className="text-gray-500">FRL 조건</div>
-                                        <div className="font-bold text-gray-800 mt-0.5">0.382 ~ 0.618</div>
+                                        <div className="text-gray-500">손절 슬리피지</div>
+                                        <div className="font-bold text-gray-800 mt-0.5">{stopSlippageBps} bp ({(stopSlippageBps / 100).toFixed(2)}%)</div>
                                     </div>
                                 </>
                             ) : (
@@ -243,6 +255,48 @@ export default function BacktestPanel() {
                                 </button>
                             </div>
                         </div>
+
+                        {/* Pullback-only: 슬리피지 & 유니버스 설정 */}
+                        {strategy === 'pullback' && (
+                            <div className="mt-4 pt-4 border-t border-emerald-100">
+                                <div className="flex items-center gap-2 mb-3">
+                                    <SlidersHorizontal className="w-4 h-4 text-emerald-500" />
+                                    <span className="text-sm font-bold text-emerald-700">마찰 비용 & 유니버스 설정</span>
+                                </div>
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                        <label className="block text-xs text-gray-500 mb-1">유니버스 Top-N</label>
+                                        <input
+                                            type="number" min={10} max={500} step={10}
+                                            className="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={volumeTopN}
+                                            onChange={e => setVolumeTopN(Number(e.target.value))}
+                                            disabled={isRunning}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs text-gray-500 mb-1">매수·익절 슬리피지 (bp)</label>
+                                        <input
+                                            type="number" min={0} max={100} step={5}
+                                            className="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={slippageBps}
+                                            onChange={e => setSlippageBps(Number(e.target.value))}
+                                            disabled={isRunning}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs text-gray-500 mb-1">손절 슬리피지 (bp)</label>
+                                        <input
+                                            type="number" min={0} max={100} step={5}
+                                            className="w-full border border-emerald-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                                            value={stopSlippageBps}
+                                            onChange={e => setStopSlippageBps(Number(e.target.value))}
+                                            disabled={isRunning}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
 
