@@ -336,8 +336,8 @@ class PullbackBacktester:
                     for buy in buys:
                         buy_price = buy['price']
                         buy_qty = buy['qty']
-                        buy_amount_actual = buy_price * buy_qty
                         buy_price_after_friction = buy_price * (1 + FRICTION_COST / 2)
+                        buy_amount_actual = buy_price_after_friction * buy_qty
                         
                         if capital < buy_amount_actual:
                             logger.info(f"SKIP [{stk_cd}] {stk_nm}: 자본금 부족 (필요={buy_amount_actual:.0f}, 잔여={capital:.0f})")

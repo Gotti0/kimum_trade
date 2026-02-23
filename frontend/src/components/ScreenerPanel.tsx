@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Play, Square, Terminal, Filter, RefreshCw, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { Play, Square, Terminal, Filter, RefreshCw, ChevronDown, ChevronUp, CheckCircle2, XCircle, Clock, X, Target, TrendingUp, TrendingDown, Shield, BarChart3 } from 'lucide-react';
 import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
@@ -63,6 +63,10 @@ export default function ScreenerPanel() {
     const [sortField, setSortField] = useState<'daily_return' | 'rvol' | 'disparity20' | 'adtv20'>('daily_return');
     const [sortAsc, setSortAsc] = useState(false);
     const logRef = useRef<HTMLDivElement>(null);
+    const [selectedStock, setSelectedStock] = useState<ScreenedStock | null>(null);
+
+    // 전략 변경 시 선택 해제
+    useEffect(() => { setSelectedStock(null); }, [strategy]);
 
     // 상태 폴링
     useEffect(() => {
@@ -135,6 +139,45 @@ export default function ScreenerPanel() {
     };
 
     const rejectedStocks = data?.all_filter_results?.filter(r => !r.passed) || [];
+
+    const getStrategyInfo = (stk: ScreenedStock) => {
+        const close = stk.close;
+        const atr = stk.atr5 || close * 0.02;
+        const capital = 10_000_000;
+        const riskAmt = capital * 0.015;
+        const slotCap = capital / 10;
+
+        if (strategy === 'pullback') {
+            const entryEst = Math.round(close * 1.001725);
+            const target = Math.round(entryEst + atr * 1.5);
+            const stop = Math.round(entryEst - atr * 1.2);
+            const breakeven = Math.round(entryEst * 1.00345);
+            const stopDist = atr * 2.5;
+            const rawShares = stopDist > 0 ? Math.floor(riskAmt / stopDist) : 0;
+            const shares = Math.floor(Math.min(rawShares * entryEst, slotCap) / entryEst);
+            return {
+                entryEst, target, stop, breakeven,
+                targetPct: ((target / entryEst) - 1) * 100,
+                stopPct: ((stop / entryEst) - 1) * 100,
+                riskAmt, stopDist, shares,
+                amount: shares * entryEst,
+                rr: 1.25, atr,
+            };
+        }
+        const entryEst = close;
+        const stop = Math.round(entryEst - atr * 2.5);
+        const stopDist = atr * 2.5;
+        const rawShares = stopDist > 0 ? Math.floor(riskAmt / stopDist) : 0;
+        const shares = Math.floor(Math.min(rawShares * entryEst, slotCap) / entryEst);
+        return {
+            entryEst, target: 0, stop, breakeven: 0,
+            targetPct: 0,
+            stopPct: ((stop / entryEst) - 1) * 100,
+            riskAmt, stopDist, shares,
+            amount: shares * entryEst,
+            rr: 0, atr,
+        };
+    };
 
     return (
         <div className="space-y-6">
@@ -341,7 +384,10 @@ export default function ScreenerPanel() {
                             </thead>
                             <tbody className="divide-y divide-gray-50">
                                 {sortedStocks.map((stk, i) => (
-                                    <tr key={stk.stk_cd} className="hover:bg-emerald-50/30 transition-colors">
+                                    <tr key={stk.stk_cd}
+                                        className={`hover:bg-emerald-50/30 transition-colors cursor-pointer ${selectedStock?.stk_cd === stk.stk_cd ? 'bg-emerald-100/60 ring-1 ring-inset ring-emerald-300' : ''}`}
+                                        onClick={() => setSelectedStock(selectedStock?.stk_cd === stk.stk_cd ? null : stk)}
+                                    >
                                         <td className="px-3 py-2.5 text-gray-400 text-xs">{i + 1}</td>
                                         <td className="px-3 py-2.5">
                                             <div className="font-medium text-gray-800">{stk.stk_nm}</div>
@@ -403,6 +449,191 @@ export default function ScreenerPanel() {
                     </div>
                 </div>
             )}
+
+            {/* Strategy Explanation Panel */}
+            {selectedStock && (() => {
+                const s = getStrategyInfo(selectedStock);
+                const stk = selectedStock;
+                if (strategy === 'pullback') {
+                    return (
+                        <div className="bg-white rounded-xl shadow-sm border-2 border-emerald-200 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                            <div className="px-5 py-4 bg-gradient-to-r from-emerald-50 to-blue-50 border-b border-emerald-100 flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                        <Target className="w-5 h-5 text-emerald-600" />
+                                        {stk.stk_nm} <span className="text-sm font-normal text-gray-400">({stk.stk_cd})</span>
+                                    </h3>
+                                    <p className="text-xs text-gray-500 mt-0.5">풀백 백테스트 기준 매수/매도 전략 · 종가 {stk.close.toLocaleString()}원</p>
+                                </div>
+                                <button onClick={() => setSelectedStock(null)} className="p-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+                                    <X className="w-5 h-5 text-gray-400" />
+                                </button>
+                            </div>
+
+                            <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-5">
+                                {/* 매수 전략 */}
+                                <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-blue-800 flex items-center gap-1.5 mb-3">
+                                        <TrendingUp className="w-4 h-4" /> 매수 전략
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">매수 시점</span><span className="font-semibold text-gray-800">필터 통과 익일 시가</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">갭하락 방어</span><span className="font-semibold text-red-600">시가/전종가 {'<'} 98% → 포기</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">슬리피지</span><span className="font-semibold text-gray-800">+10bp (0.1%)</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">마찰비용(편도)</span><span className="font-semibold text-gray-800">0.1725%</span></div>
+                                        <hr className="border-blue-100" />
+                                        <div className="flex justify-between"><span className="text-gray-500">예상 매수가</span><span className="font-bold text-blue-700">{s.entryEst.toLocaleString()}원</span></div>
+                                    </div>
+                                </div>
+
+                                {/* 매도 전략 */}
+                                <div className="rounded-xl border border-amber-100 bg-amber-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-amber-800 flex items-center gap-1.5 mb-3">
+                                        <TrendingDown className="w-4 h-4" /> 매도 전략
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">① 1차 익절</span>
+                                            <span className="font-semibold text-emerald-700">{s.target.toLocaleString()}원 (+{s.targetPct.toFixed(1)}%)</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">진입가 + ATR(14)×1.5 도달 시 <b className="text-gray-600">50% 매도</b></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">② 하드 스톱</span>
+                                            <span className="font-semibold text-red-600">{s.stop.toLocaleString()}원 ({s.stopPct.toFixed(1)}%)</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">진입가 − ATR(14)×1.2 이탈 시 <b className="text-gray-600">전량 손절</b></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">③ 본절가 스톱</span>
+                                            <span className="font-semibold text-yellow-700">{s.breakeven.toLocaleString()}원 (+0.35%)</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">1차 익절 후 스톱 상향 (마찰비용 흡수)</div>
+                                        <div className="flex justify-between"><span className="text-gray-500">④ 만기 청산</span>
+                                            <span className="font-semibold text-gray-700">7영업일</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">보유일 초과 시 종가로 전량 청산</div>
+                                    </div>
+                                </div>
+
+                                {/* 포지션 사이징 */}
+                                <div className="rounded-xl border border-purple-100 bg-purple-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-purple-800 flex items-center gap-1.5 mb-3">
+                                        <Shield className="w-4 h-4" /> 포지션 사이징
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">기준 자본금</span><span className="font-semibold text-gray-800">1,000만원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">ATR(14)</span><span className="font-semibold text-gray-800">{s.atr.toLocaleString()}원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">1회 리스크</span><span className="font-semibold text-gray-800">{s.riskAmt.toLocaleString()}원 (1.5%)</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">스톱 거리(사이징)</span><span className="font-semibold text-gray-800">{Math.round(s.stopDist).toLocaleString()}원 (ATR×2.5)</span></div>
+                                        <hr className="border-purple-100" />
+                                        <div className="flex justify-between"><span className="text-gray-500">투입 수량</span><span className="font-bold text-purple-700">{s.shares}주</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">투입 금액</span><span className="font-bold text-purple-700">{Math.round(s.amount).toLocaleString()}원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">최대 동시 보유</span><span className="font-semibold text-gray-800">10 슬롯</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">손익비(R:R)</span><span className="font-bold text-emerald-700">{s.rr.toFixed(2)} : 1</span></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* 가격 레벨 시각화 */}
+                            <div className="px-5 pb-5">
+                                <div className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+                                    <h4 className="text-xs font-bold text-gray-600 mb-3 flex items-center gap-1.5">
+                                        <BarChart3 className="w-3.5 h-3.5" /> 가격 레벨
+                                    </h4>
+                                    <div className="space-y-2">
+                                        {[
+                                            { label: '1차 익절', price: s.target, pct: s.targetPct, color: 'bg-emerald-500', textColor: 'text-emerald-700' },
+                                            { label: '본절가', price: s.breakeven, pct: 0.345, color: 'bg-yellow-500', textColor: 'text-yellow-700' },
+                                            { label: '매수가', price: s.entryEst, pct: 0, color: 'bg-blue-500', textColor: 'text-blue-700' },
+                                            { label: '하드 스톱', price: s.stop, pct: s.stopPct, color: 'bg-red-500', textColor: 'text-red-700' },
+                                        ].map(level => {
+                                            const range = s.target - s.stop;
+                                            const width = range > 0 ? ((level.price - s.stop) / range) * 100 : 50;
+                                            return (
+                                                <div key={level.label} className="flex items-center gap-3 text-xs">
+                                                    <span className={`w-16 text-right font-medium ${level.textColor}`}>{level.label}</span>
+                                                    <div className="flex-1 bg-gray-200 rounded-full h-3 overflow-hidden">
+                                                        <div className={`${level.color} h-full rounded-full transition-all`} style={{ width: `${Math.max(2, Math.min(width, 100))}%` }} />
+                                                    </div>
+                                                    <span className="w-24 text-right font-mono font-semibold text-gray-700">{level.price.toLocaleString()}원</span>
+                                                    <span className={`w-16 text-right font-mono text-xs ${level.pct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                        {level.pct >= 0 ? '+' : ''}{level.pct.toFixed(1)}%
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                } else {
+                    return (
+                        <div className="bg-white rounded-xl shadow-sm border-2 border-emerald-200 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                            <div className="px-5 py-4 bg-gradient-to-r from-emerald-50 to-blue-50 border-b border-emerald-100 flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                                        <Target className="w-5 h-5 text-emerald-600" />
+                                        {stk.stk_nm} <span className="text-sm font-normal text-gray-400">({stk.stk_cd})</span>
+                                    </h3>
+                                    <p className="text-xs text-gray-500 mt-0.5">스윙-상따 백테스트 기준 매수/매도 전략 · 종가 {stk.close.toLocaleString()}원</p>
+                                </div>
+                                <button onClick={() => setSelectedStock(null)} className="p-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+                                    <X className="w-5 h-5 text-gray-400" />
+                                </button>
+                            </div>
+
+                            <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-5">
+                                {/* 매수 전략 */}
+                                <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-blue-800 flex items-center gap-1.5 mb-3">
+                                        <TrendingUp className="w-4 h-4" /> 매수 전략
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">매수 방식</span><span className="font-semibold text-gray-800">Pseudo-VWAP 분할</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">매수 시간대</span><span className="font-semibold text-gray-800">14:30 ~ 15:20</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">분할 구간</span><span className="font-semibold text-gray-800">5구간 (10분 단위)</span></div>
+                                        <hr className="border-blue-100" />
+                                        <div className="text-gray-400 leading-relaxed">10%→12%→18%→25%→35% 비율로 시간대별 분할 매수 (VWAP 추종)</div>
+                                    </div>
+                                </div>
+
+                                {/* 매도 전략 */}
+                                <div className="rounded-xl border border-amber-100 bg-amber-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-amber-800 flex items-center gap-1.5 mb-3">
+                                        <TrendingDown className="w-4 h-4" /> 매도 전략
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">① 트레일링 스톱</span>
+                                            <span className="font-semibold text-red-600">{s.stop.toLocaleString()}원 ({s.stopPct.toFixed(1)}%)</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">종가 − ATR(5)×2.5 래칫 방식 <b className="text-gray-600">(상승만 갱신)</b></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">② 만기 청산</span>
+                                            <span className="font-semibold text-gray-700">5영업일</span>
+                                        </div>
+                                        <div className="pl-3 text-gray-400">보유일 초과 시 종가로 전량 청산</div>
+                                        <hr className="border-amber-100" />
+                                        <div className="text-gray-400 leading-relaxed">고정 목표가 없음. 트레일링 스톱이 수익 구간에서 자동 상향하여 이익 보호</div>
+                                    </div>
+                                </div>
+
+                                {/* 포지션 사이징 */}
+                                <div className="rounded-xl border border-purple-100 bg-purple-50/30 p-4">
+                                    <h4 className="text-sm font-bold text-purple-800 flex items-center gap-1.5 mb-3">
+                                        <Shield className="w-4 h-4" /> 포지션 사이징
+                                    </h4>
+                                    <div className="space-y-2 text-xs">
+                                        <div className="flex justify-between"><span className="text-gray-500">기준 자본금</span><span className="font-semibold text-gray-800">1,000만원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">ATR(5)</span><span className="font-semibold text-gray-800">{s.atr.toLocaleString()}원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">1회 리스크</span><span className="font-semibold text-gray-800">{s.riskAmt.toLocaleString()}원 (1.5%)</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">스톱 거리</span><span className="font-semibold text-gray-800">{Math.round(s.stopDist).toLocaleString()}원 (ATR×2.5)</span></div>
+                                        <hr className="border-purple-100" />
+                                        <div className="flex justify-between"><span className="text-gray-500">투입 수량</span><span className="font-bold text-purple-700">{s.shares}주</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">투입 금액</span><span className="font-bold text-purple-700">{Math.round(s.amount).toLocaleString()}원</span></div>
+                                        <div className="flex justify-between"><span className="text-gray-500">최대 동시 보유</span><span className="font-semibold text-gray-800">10 슬롯</span></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                }
+            })()}
 
             {/* Rejected Stocks (Collapsible) */}
             {data && rejectedStocks.length > 0 && (
