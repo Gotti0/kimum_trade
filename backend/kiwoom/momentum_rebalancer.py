@@ -3,6 +3,9 @@ MomentumRebalancer: 시장 국면 필터 + 가중치 배분 모듈.
 
 역할 (설계 문서 §3.3, §4, §5-③, §2-5):
   1. 시장 국면 판단 — KOSPI vs SMA(200) 비교 → BULL / BEAR 분류
+     - 히스테리시스 밴드 적용으로 휩소(Whipsaw) 방지
+     - BULL→BEAR: price < SMA×(1-buffer) 일 때만 전환
+     - BEAR→BULL: price > SMA×(1+buffer) 일 때만 전환
      - BULL (KOSPI ≥ SMA200): 모멘텀 스코어 기반 정상 편입
      - BEAR (KOSPI < SMA200): 모든 주식 비중 → 0%, 전액 현금화
   2. 가중치 배분 — 두 가지 방식 지원
@@ -66,6 +69,7 @@ class MomentumRebalancer:
         self,
         weight_method: str = "inverse_volatility",
         vol_lookback: int = VOL_LOOKBACK,
+        hysteresis_buffer: float = 0.03,
     ):
         """
         Args:
@@ -73,6 +77,10 @@ class MomentumRebalancer:
                 ``"equal_weight"`` — 1/N 균등 배분.
                 ``"inverse_volatility"`` — 변동성 역수 기반 리스크 패리티.
             vol_lookback: 역변동성 산출 시 사용할 과거 영업일 수 (기본 20).
+            hysteresis_buffer: 휩소 방지를 위한 히스테리시스 밴드 폭 (기본 0.03 = ±3%).
+                BULL→BEAR 전환은 price < SMA×(1-buffer) 일 때만,
+                BEAR→BULL 전환은 price > SMA×(1+buffer) 일 때만 발생합니다.
+                0.0으로 설정하면 히스테리시스 없이 기존 이진 비교로 동작합니다.
         """
         if weight_method not in self.VALID_METHODS:
             raise ValueError(
@@ -81,6 +89,11 @@ class MomentumRebalancer:
             )
         self.weight_method = weight_method
         self.vol_lookback = vol_lookback
+        self.hysteresis_buffer = hysteresis_buffer
+
+        # 히스테리시스 이전 국면 상태 추적
+        self._prev_regime: Optional[str] = None            # 국내 KOSPI 국면
+        self._prev_global_regimes: Dict[str, str] = {}     # 글로벌 자산별 국면
 
         # 리밸런싱 이력 기록
         self.rebalance_history: List[dict] = []
@@ -89,15 +102,19 @@ class MomentumRebalancer:
     #  1. 시장 국면 판별 (Market Regime Filter)
     # ═══════════════════════════════════════════════════
 
-    @staticmethod
     def detect_regime(
-        current_kospi: float, kospi_sma200: float
+        self, current_kospi: float, kospi_sma200: float
     ) -> Tuple[str, float]:
         """KOSPI 종가 vs SMA(200) 비교로 시장 국면을 판별합니다.
 
-        설계 문서 §3.3:
-          KOSPI ≥ SMA(200) → BULL (scale_factor = 1.0)
-          KOSPI < SMA(200) → BEAR (scale_factor = 0.0, 전액 현금화)
+        히스테리시스 밴드를 적용하여 SMA 근처에서의 잦은 BULL↔BEAR
+        전환(휩소)을 방지합니다.
+
+        설계 문서 §3.3 + 휩소 방지 확장:
+          첫 판별:      KOSPI ≥ SMA(200) → BULL, 아니면 BEAR
+          이전 BULL 시:  KOSPI < SMA×(1-buffer) → BEAR 전환
+          이전 BEAR 시:  KOSPI > SMA×(1+buffer) → BULL 전환
+          그 외:        이전 국면 유지 (밴드 내부 = 전환 억제)
 
         DataHandler가 제공하는 값에는 이미 shift(1)이 적용되어 있어
         당일 장중 노이즈가 반영되지 않은 보수적 판단입니다.
@@ -118,10 +135,37 @@ class MomentumRebalancer:
             )
             return "BULL", 1.0
 
-        if current_kospi >= kospi_sma200:
-            return "BULL", 1.0
-        else:
-            return "BEAR", 0.0
+        buf = self.hysteresis_buffer
+        prev = self._prev_regime
+
+        if prev is None:
+            # 첫 호출: 단순 비교
+            regime = "BULL" if current_kospi >= kospi_sma200 else "BEAR"
+        elif prev == "BULL":
+            # BULL 유지, 하방 이탈 시에만 BEAR 전환
+            if current_kospi < kospi_sma200 * (1 - buf):
+                regime = "BEAR"
+                logger.info(
+                    "[히스테리시스] BULL→BEAR 전환: KOSPI %.2f < SMA200 %.2f × %.2f = %.2f",
+                    current_kospi, kospi_sma200, 1 - buf, kospi_sma200 * (1 - buf),
+                )
+            else:
+                regime = "BULL"
+        else:  # prev == "BEAR"
+            # BEAR 유지, 상방 돌파 시에만 BULL 전환
+            if current_kospi > kospi_sma200 * (1 + buf):
+                regime = "BULL"
+                logger.info(
+                    "[히스테리시스] BEAR→BULL 전환: KOSPI %.2f > SMA200 %.2f × %.2f = %.2f",
+                    current_kospi, kospi_sma200, 1 + buf, kospi_sma200 * (1 + buf),
+                )
+            else:
+                regime = "BEAR"
+
+        # 상태 갱신
+        self._prev_regime = regime
+        scale_factor = 1.0 if regime == "BULL" else 0.0
+        return regime, scale_factor
 
     # ═══════════════════════════════════════════════════
     #  2. 가중치 배분 (Weight Allocation)
@@ -308,6 +352,16 @@ class MomentumRebalancer:
         ]
         return pd.DataFrame(rows)
 
+    def reset_regime_state(self) -> None:
+        """히스테리시스 국면 상태를 초기화합니다.
+
+        새로운 백테스트나 스크리너 실행 시
+        이전 상태가 남아있지 않도록 호출합니다.
+        """
+        self._prev_regime = None
+        self._prev_global_regimes = {}
+        logger.info("[히스테리시스] 국면 상태 초기화 완료")
+
     def summary(self) -> str:
         """리밸런서 설정 및 누적 통계 문자열을 반환합니다."""
         n = len(self.rebalance_history)
@@ -318,12 +372,13 @@ class MomentumRebalancer:
             "=" * 60,
             "  MomentumRebalancer 요약",
             "=" * 60,
-            f"  가중치 방식:    {self.weight_method}",
-            f"  변동성 참조일:  {self.vol_lookback}일",
-            f"  총 리밸런싱:    {n}회",
-            f"    BULL:         {n_bull}회",
-            f"    BEAR:         {n_bear}회",
-            f"  현금화 비율:    {n_bear / n * 100:.1f}%" if n > 0 else "  현금화 비율:    N/A",
+            f"  가중치 방식:      {self.weight_method}",
+            f"  변동성 참조일:    {self.vol_lookback}일",
+            f"  히스테리시스 밴드: ±{self.hysteresis_buffer * 100:.1f}%",
+            f"  총 리밸런싱:      {n}회",
+            f"    BULL:           {n_bull}회",
+            f"    BEAR:           {n_bear}회",
+            f"  현금화 비율:      {n_bear / n * 100:.1f}%" if n > 0 else "  현금화 비율:      N/A",
             "=" * 60,
         ]
         return "\n".join(lines)
@@ -332,16 +387,21 @@ class MomentumRebalancer:
     #  5. 글로벌 자산군별 독립 국면 필터
     # ═══════════════════════════════════════════════════
 
-    @staticmethod
     def detect_global_regimes(
+        self,
         global_prices: pd.DataFrame,
         global_sma200: pd.DataFrame,
     ) -> Dict[str, str]:
         """각 글로벌 ETF의 가격 vs 자체 SMA200 비교 → 개별 국면 판별.
 
-        설계 문서 §2-5:
-          SPY ≥ SMA200(SPY) → BULL  → 정상 비중
-          EFA < SMA200(EFA) → BEAR  → 비중 → SHY로 이전
+        히스테리시스 밴드를 적용하여 각 자산별로 SMA 근처에서의
+        잦은 BULL↔BEAR 전환(휩소)을 방지합니다.
+
+        설계 문서 §2-5 + 휩소 방지 확장:
+          첫 판별:      price ≥ SMA → BULL, 아니면 BEAR
+          이전 BULL 시:  price < SMA×(1-buffer) → BEAR 전환
+          이전 BEAR 시:  price > SMA×(1+buffer) → BULL 전환
+          그 외:        이전 국면 유지 (밴드 내부 = 전환 억제)
 
         Args:
             global_prices: 기준일까지의 글로벌 ETF 종가 DataFrame.
@@ -354,6 +414,8 @@ class MomentumRebalancer:
 
         if global_prices.empty or global_sma200.empty:
             return regime_map
+
+        buf = self.hysteresis_buffer
 
         # 가장 최근 행 사용
         latest_prices = global_prices.iloc[-1]
@@ -368,13 +430,40 @@ class MomentumRebalancer:
                 regime_map[ticker] = "BULL"
                 continue
 
-            regime_map[ticker] = "BULL" if price >= sma else "BEAR"
+            prev = self._prev_global_regimes.get(ticker)
+
+            if prev is None:
+                # 첫 호출: 단순 비교
+                regime = "BULL" if price >= sma else "BEAR"
+            elif prev == "BULL":
+                if price < sma * (1 - buf):
+                    regime = "BEAR"
+                    logger.info(
+                        "[히스테리시스] %s BULL→BEAR: %.2f < SMA %.2f × %.2f = %.2f",
+                        ticker, price, sma, 1 - buf, sma * (1 - buf),
+                    )
+                else:
+                    regime = "BULL"
+            else:  # prev == "BEAR"
+                if price > sma * (1 + buf):
+                    regime = "BULL"
+                    logger.info(
+                        "[히스테리시스] %s BEAR→BULL: %.2f > SMA %.2f × %.2f = %.2f",
+                        ticker, price, sma, 1 + buf, sma * (1 + buf),
+                    )
+                else:
+                    regime = "BEAR"
+
+            regime_map[ticker] = regime
+
+        # 상태 갱신
+        self._prev_global_regimes.update(regime_map)
 
         n_bull = sum(1 for v in regime_map.values() if v == "BULL")
         n_bear = len(regime_map) - n_bull
         logger.info(
-            "글로벌 국면 판별: %d BULL / %d BEAR (총 %d 티커)",
-            n_bull, n_bear, len(regime_map),
+            "글로벌 국면 판별 (히스테리시스 ±%.1f%%): %d BULL / %d BEAR (총 %d 티커)",
+            buf * 100, n_bull, n_bear, len(regime_map),
         )
 
         return regime_map

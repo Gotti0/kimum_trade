@@ -1268,6 +1268,526 @@ function BacktestTab() {
 }
 
 // ═══════════════════════════════════════════════════
+//  Global Screener Tab (국내 ETF 근사 포트폴리오)
+// ═══════════════════════════════════════════════════
+
+interface GlobalScreenerKrEtf {
+    kr_code: string;
+    kr_name: string;
+    global_ticker: string;
+    category: string;
+    hedged: boolean;
+    weight_pct: number;
+    alloc_krw: number;
+    kr_price: number;
+    shares: number;
+    actual_alloc: number;
+    description: string;
+}
+
+interface GlobalEtfDetail {
+    global_ticker: string;
+    global_label: string;
+    global_price_usd: number;
+    regime: string;
+    weight_pct: number;
+    kr_code: string;
+    kr_name: string;
+    kr_category: string;
+    kr_hedged: boolean;
+    kr_description: string;
+    ret_3m?: number;
+    ret_6m?: number;
+    ret_12m?: number;
+    score?: number;
+    abs_pass?: boolean;
+}
+
+interface GlobalScreenerResult {
+    timestamp: string;
+    ref_date: string;
+    preset: {
+        key: string;
+        label: string;
+        icon: string;
+        risk_level: number;
+        desc: string;
+    };
+    config: {
+        weight_method: string;
+        initial_capital: number;
+        warmup_days: number;
+    };
+    usdkrw_rate: number;
+    regime_summary: {
+        n_bull: number;
+        n_bear: number;
+        total: number;
+        regimes: Record<string, string>;
+    };
+    strategic_weights: Record<string, string>;
+    category_actual: Record<string, number>;
+    global_etf_details: GlobalEtfDetail[];
+    kr_portfolio: GlobalScreenerKrEtf[];
+    benchmark_kr: Array<{
+        kr_code: string;
+        kr_name: string;
+        global_ticker: string;
+        weight_pct: number;
+        alloc_krw: number;
+        kr_price: number;
+        shares: number;
+    }>;
+    summary: {
+        total_etfs: number;
+        invested_etfs: number;
+        total_alloc_krw: number;
+        remaining_cash: number;
+        utilization_pct: number;
+        data_start: string;
+        data_end: string;
+        error?: string;
+    };
+    elapsed_sec: number;
+}
+
+const CATEGORY_COLOR: Record<string, string> = {
+    '주식': 'bg-blue-100 text-blue-800',
+    '채권': 'bg-emerald-100 text-emerald-800',
+    '대체투자': 'bg-purple-100 text-purple-800',
+    '현금등가': 'bg-gray-100 text-gray-700',
+    '미분류': 'bg-gray-100 text-gray-500',
+};
+
+function GlobalScreenerTab() {
+    const [status, setStatus] = useState<PipelineStatus>({ name: 'global-screener', status: 'idle', logs: [] });
+    const [result, setResult] = useState<GlobalScreenerResult | null>(null);
+    const [preset, setPreset] = useState('balanced');
+    const [capital, setCapital] = useState(100_000_000);
+    const [showBenchmark, setShowBenchmark] = useState(false);
+
+    const isRunning = status.status === 'running';
+
+    // Status polling
+    useEffect(() => {
+        const fetchFn = () => {
+            axios.get(`${API}/status/global-screener`)
+                .then(r => setStatus(r.data))
+                .catch(() => { });
+        };
+        fetchFn();
+        const id = setInterval(fetchFn, 3000);
+        return () => clearInterval(id);
+    }, []);
+
+    // Auto-load results
+    useEffect(() => {
+        if (status.status === 'finished' && status.exitCode === 0) loadResults();
+    }, [status.status, status.exitCode]);
+
+    useEffect(() => { loadResults(); }, []);
+
+    const loadResults = () => {
+        axios.get(`${API}/global-screener/result`)
+            .then(r => {
+                if (r.data.status === 'ok' && r.data.data) setResult(r.data.data);
+            })
+            .catch(() => { });
+    };
+
+    const startScreener = () => {
+        axios.post(`${API}/global-screener`, {
+            preset,
+            weight_method: 'inverse_volatility',
+            capital,
+        }).catch(err => alert('실행 실패: ' + err.message));
+    };
+
+    const stopScreener = () => {
+        axios.post(`${API}/stop`, { name: 'global-screener' }).catch(() => { });
+    };
+
+    const summary = result?.summary;
+    const currentPreset = PRESET_INFO[preset] || PRESET_INFO['balanced'];
+
+    // 카테고리별 배분 차트 데이터
+    const categoryChartData = useMemo(() => {
+        if (!result?.category_actual) return [];
+        const labelMap: Record<string, string> = {
+            equity: '주식', bond: '채권', alternative: '대체투자',
+            cash: '현금등가', unknown: '미분류',
+        };
+        return Object.entries(result.category_actual)
+            .map(([k, v]) => ({ name: labelMap[k] || k, value: v }))
+            .sort((a, b) => b.value - a.value);
+    }, [result]);
+
+    return (
+        <div className="space-y-6">
+            {/* Controls */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center">
+                            <Globe className="w-6 h-6 text-indigo-600" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-800">글로벌 스크리너 (국내 ETF)</h2>
+                            <p className="text-sm text-gray-500">글로벌 멀티에셋 듀얼 모멘텀 → 국내 상장 ETF 근사 포트폴리오</p>
+                        </div>
+                    </div>
+                    <StatusBadge s={status} />
+                </div>
+
+                {/* Preset Selection */}
+                <div className="grid grid-cols-5 gap-2 mb-6">
+                    {Object.entries(PRESET_INFO).map(([key, info]) => (
+                        <button
+                            key={key}
+                            className={`flex flex-col items-center gap-1 p-3 rounded-xl border-2 transition-all text-center ${preset === key
+                                ? 'border-indigo-500 bg-indigo-50 shadow-sm'
+                                : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
+                                }`}
+                            onClick={() => setPreset(key)}
+                            disabled={isRunning}
+                        >
+                            <span className="text-xl">{info.emoji}</span>
+                            <span className={`text-xs font-bold ${preset === key ? 'text-indigo-700' : 'text-gray-600'}`}>{info.label}</span>
+                            <div className="flex gap-0.5">
+                                {Array.from({ length: 5 }, (_, i) => (
+                                    <div key={i} className={`w-1.5 h-1.5 rounded-full ${i < info.risk ? 'bg-indigo-500' : 'bg-gray-200'}`} />
+                                ))}
+                            </div>
+                        </button>
+                    ))}
+                </div>
+
+                {/* Preset Description */}
+                <div className="bg-indigo-50 rounded-lg p-4 mb-6 flex items-start gap-3">
+                    <Info className="w-5 h-5 text-indigo-500 mt-0.5 flex-shrink-0" />
+                    <div>
+                        <p className="text-sm font-semibold text-indigo-800">{currentPreset.emoji} {currentPreset.label} — {currentPreset.desc}</p>
+                        <p className="text-xs text-indigo-600 mt-1">{currentPreset.detail}</p>
+                        <div className="flex gap-3 mt-2 text-xs text-indigo-500">
+                            {Object.entries(currentPreset.weights || {}).map(([k, v]) => (
+                                <span key={k}>{CATEGORY_WEIGHT_LABELS[k] || k}: {(v * 100).toFixed(0)}%</span>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Capital + Run */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <DollarSign className="w-4 h-4 text-gray-400" />
+                            투자 자본금 (KRW)
+                        </label>
+                        <input
+                            type="number" min={10_000_000} step={10_000_000}
+                            className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                            value={capital}
+                            onChange={e => setCapital(Number(e.target.value))}
+                            disabled={isRunning}
+                        />
+                        <p className="text-xs text-gray-400 mt-1">{formatKRW(capital)}원</p>
+                    </div>
+                    <div className="md:col-span-2 flex items-end">
+                        <div className="flex gap-3 w-full">
+                            <button
+                                className="flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-lg shadow-indigo-200 active:scale-[0.98]"
+                                onClick={startScreener}
+                                disabled={isRunning}
+                            >
+                                <Play className="w-4 h-4" />
+                                스크리닝 시작
+                            </button>
+                            <button
+                                className="flex items-center justify-center px-4 py-2.5 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
+                                onClick={stopScreener}
+                                disabled={!isRunning}
+                            >
+                                <Square className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* ──────── Results ──────── */}
+            {result && (
+                <>
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">프리셋</div>
+                            <div className="text-lg font-bold text-gray-800">
+                                {result.preset?.icon} {result.preset?.label}
+                            </div>
+                            <div className="text-xs text-gray-400">risk {result.preset?.risk_level}</div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">국면 현황</div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-lg font-bold text-emerald-600">BULL {result.regime_summary?.n_bull}</span>
+                                <span className="text-gray-300">/</span>
+                                <span className="text-lg font-bold text-red-500">BEAR {result.regime_summary?.n_bear}</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">편입 ETF</div>
+                            <div className="text-lg font-bold text-gray-800">{summary?.invested_etfs ?? '-'}
+                                <span className="text-sm font-normal text-gray-400"> / {summary?.total_etfs ?? '-'}종</span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">USD/KRW</div>
+                            <div className="text-lg font-bold text-gray-800">{result.usdkrw_rate?.toLocaleString() ?? '-'}</div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-4 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-1">활용률</div>
+                            <div className="text-lg font-bold text-indigo-700">{summary?.utilization_pct?.toFixed(1) ?? '-'}%</div>
+                            <div className="text-xs text-gray-400">잔여 {formatKRW(summary?.remaining_cash ?? 0)}원</div>
+                        </div>
+                    </div>
+
+                    {/* Category Allocation Bar */}
+                    {categoryChartData.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                                <BarChart3 className="w-4 h-4 text-indigo-500" />
+                                카테고리별 실제 배분
+                            </h3>
+                            <div className="flex gap-1 h-8 rounded-lg overflow-hidden">
+                                {categoryChartData.map(d => {
+                                    const colors: Record<string, string> = {
+                                        '주식': 'bg-blue-500', '채권': 'bg-emerald-500',
+                                        '대체투자': 'bg-purple-500', '현금등가': 'bg-gray-400',
+                                    };
+                                    return (
+                                        <div key={d.name} className={`${colors[d.name] || 'bg-gray-300'} flex items-center justify-center text-white text-xs font-bold`}
+                                            style={{ width: `${d.value}%`, minWidth: d.value > 3 ? 'auto' : '0px' }}
+                                            title={`${d.name}: ${d.value.toFixed(1)}%`}
+                                        >
+                                            {d.value >= 8 ? `${d.name} ${d.value.toFixed(0)}%` : d.value >= 4 ? `${d.value.toFixed(0)}%` : ''}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                            <div className="flex gap-4 mt-3 text-xs text-gray-500">
+                                {categoryChartData.map(d => (
+                                    <span key={d.name} className="flex items-center gap-1">
+                                        <span className={`w-2 h-2 rounded-full ${d.name === '주식' ? 'bg-blue-500' : d.name === '채권' ? 'bg-emerald-500' : d.name === '대체투자' ? 'bg-purple-500' : 'bg-gray-400'}`} />
+                                        {d.name}: {d.value.toFixed(1)}%
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 자산별 국면 + 모멘텀 스코어 */}
+                    {result.global_etf_details && result.global_etf_details.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                                <Activity className="w-5 h-5 text-indigo-500" />
+                                <h3 className="text-lg font-bold text-gray-800">자산별 국면 & 모멘텀</h3>
+                                <span className="text-xs text-gray-400 ml-2">
+                                    기준일: {result.ref_date} | 글로벌 ETF → 국내 ETF 매핑
+                                </span>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="bg-gray-50 border-b border-gray-100">
+                                            <th className="px-4 py-3 text-xs font-semibold text-gray-500 text-left">국면</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">글로벌</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">자산군</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">국내 ETF</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">카테고리</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">3M</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">6M</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">12M</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">Score</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">비중</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {result.global_etf_details.map(etf => (
+                                            <tr key={etf.global_ticker} className={`border-b border-gray-50 hover:bg-indigo-50/20 transition-colors ${etf.weight_pct <= 0 ? 'opacity-40' : ''}`}>
+                                                <td className="px-4 py-2.5">
+                                                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${etf.regime === 'BULL' ? 'bg-emerald-100 text-emerald-700' : etf.regime === 'BEAR' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-500'}`}>
+                                                        {etf.regime}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-2.5 font-mono text-xs text-gray-600 font-bold">{etf.global_ticker}</td>
+                                                <td className="px-3 py-2.5 text-gray-800 font-medium">{etf.global_label}</td>
+                                                <td className="px-3 py-2.5">
+                                                    <div className="flex flex-col">
+                                                        <span className="text-gray-800 font-semibold text-xs">{etf.kr_name}</span>
+                                                        <span className="text-gray-400 font-mono text-[10px]">{etf.kr_code}</span>
+                                                    </div>
+                                                </td>
+                                                <td className="px-3 py-2.5">
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${CATEGORY_COLOR[etf.kr_category] || 'bg-gray-100 text-gray-500'}`}>
+                                                        {etf.kr_category}
+                                                    </span>
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-mono text-xs ${(etf.ret_3m ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {etf.ret_3m != null ? `${etf.ret_3m >= 0 ? '+' : ''}${etf.ret_3m.toFixed(1)}%` : '-'}
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-mono text-xs ${(etf.ret_6m ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {etf.ret_6m != null ? `${etf.ret_6m >= 0 ? '+' : ''}${etf.ret_6m.toFixed(1)}%` : '-'}
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-mono text-xs ${(etf.ret_12m ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                                                    {etf.ret_12m != null ? `${etf.ret_12m >= 0 ? '+' : ''}${etf.ret_12m.toFixed(1)}%` : '-'}
+                                                </td>
+                                                <td className={`px-3 py-2.5 text-right font-bold text-xs ${(etf.score ?? 0) >= 0 ? 'text-indigo-700' : 'text-red-600'}`}>
+                                                    {etf.score != null ? `${etf.score >= 0 ? '+' : ''}${etf.score.toFixed(1)}%` : '-'}
+                                                </td>
+                                                <td className="px-3 py-2.5 text-right font-bold text-indigo-700">
+                                                    {etf.weight_pct > 0 ? `${etf.weight_pct.toFixed(1)}%` : <span className="text-gray-300">0%</span>}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 국내 ETF 포트폴리오 (매수용) */}
+                    {result.kr_portfolio && result.kr_portfolio.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                                <Target className="w-5 h-5 text-indigo-500" />
+                                <h3 className="text-lg font-bold text-gray-800">국내 ETF 매수 포트폴리오</h3>
+                                <span className="text-xs text-gray-400 ml-2">
+                                    자본금 {formatKRW(result.config?.initial_capital ?? 0)}원 기준
+                                </span>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead>
+                                        <tr className="bg-gray-50 border-b border-gray-100">
+                                            <th className="px-4 py-3 text-xs font-semibold text-gray-500 text-left">국내 ETF</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">종목코드</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-left">카테고리</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-center">헤지</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">비중</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">현재가</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">매수수량</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">배분금액</th>
+                                            <th className="px-3 py-3 text-xs font-semibold text-gray-500 text-right">실제투자</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {result.kr_portfolio.filter(e => e.weight_pct > 0).map((etf, i) => (
+                                            <tr key={etf.kr_code} className={`border-b border-gray-50 hover:bg-indigo-50/20 transition-colors ${i < 3 ? 'bg-indigo-50/10' : ''}`}>
+                                                <td className="px-4 py-2.5">
+                                                    <div className="font-semibold text-gray-800">{etf.kr_name}</div>
+                                                    <div className="text-[10px] text-gray-400">{etf.global_ticker} 대응</div>
+                                                </td>
+                                                <td className="px-3 py-2.5 font-mono text-xs text-gray-600">{etf.kr_code}</td>
+                                                <td className="px-3 py-2.5">
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${CATEGORY_COLOR[etf.category] || 'bg-gray-100 text-gray-500'}`}>
+                                                        {etf.category}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-2.5 text-center">
+                                                    {etf.hedged
+                                                        ? <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700">H</span>
+                                                        : <span className="text-gray-300 text-xs">-</span>}
+                                                </td>
+                                                <td className="px-3 py-2.5 text-right font-bold text-indigo-700">{etf.weight_pct.toFixed(1)}%</td>
+                                                <td className="px-3 py-2.5 text-right font-mono text-gray-700">
+                                                    {etf.kr_price > 0 ? etf.kr_price.toLocaleString() : <span className="text-gray-300">N/A</span>}
+                                                </td>
+                                                <td className="px-3 py-2.5 text-right font-bold text-gray-800">{etf.shares > 0 ? `${etf.shares}주` : '-'}</td>
+                                                <td className="px-3 py-2.5 text-right font-mono text-gray-600">{etf.alloc_krw > 0 ? formatKRW(etf.alloc_krw) : '-'}</td>
+                                                <td className="px-3 py-2.5 text-right font-bold text-gray-800">{etf.actual_alloc > 0 ? formatKRW(etf.actual_alloc) : '-'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr className="bg-indigo-50 border-t-2 border-indigo-200">
+                                            <td colSpan={4} className="px-4 py-3 font-bold text-indigo-800">합계</td>
+                                            <td className="px-3 py-3 text-right font-bold text-indigo-800">
+                                                {result.kr_portfolio.filter(e => e.weight_pct > 0).reduce((s, e) => s + e.weight_pct, 0).toFixed(1)}%
+                                            </td>
+                                            <td></td>
+                                            <td className="px-3 py-3 text-right font-bold text-indigo-800">
+                                                {result.kr_portfolio.filter(e => e.weight_pct > 0).reduce((s, e) => s + e.shares, 0)}주
+                                            </td>
+                                            <td className="px-3 py-3 text-right font-bold text-indigo-800">
+                                                {formatKRW(result.kr_portfolio.reduce((s, e) => s + e.alloc_krw, 0))}
+                                            </td>
+                                            <td className="px-3 py-3 text-right font-bold text-indigo-800">
+                                                {formatKRW(summary?.total_alloc_krw ?? 0)}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                            <div className="px-6 py-3 bg-gray-50 border-t border-gray-100 text-xs text-gray-400 flex justify-between">
+                                <span>{result.timestamp} | {result.elapsed_sec}초 소요</span>
+                                <span>데이터 기간: {summary?.data_start} ~ {summary?.data_end}</span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Benchmark 60/40 (collapsible) */}
+                    {result.benchmark_kr && result.benchmark_kr.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <button
+                                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                                onClick={() => setShowBenchmark(!showBenchmark)}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <Shield className="w-5 h-5 text-gray-400" />
+                                    <span className="text-sm font-bold text-gray-700">벤치마크 60/40 (SPY 60% + AGG 40%)</span>
+                                </div>
+                                {showBenchmark ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                            </button>
+                            {showBenchmark && (
+                                <div className="overflow-x-auto border-t border-gray-100">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="bg-gray-50 border-b border-gray-100">
+                                                <th className="px-4 py-2 text-xs font-semibold text-gray-500 text-left">국내 ETF</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-left">글로벌</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">비중</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">현재가</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">매수수량</th>
+                                                <th className="px-3 py-2 text-xs font-semibold text-gray-500 text-right">배분금액</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {result.benchmark_kr.map(bm => (
+                                                <tr key={bm.kr_code} className="border-b border-gray-50">
+                                                    <td className="px-4 py-2 font-semibold text-gray-800">{bm.kr_name}</td>
+                                                    <td className="px-3 py-2 font-mono text-xs text-gray-600">{bm.global_ticker}</td>
+                                                    <td className="px-3 py-2 text-right font-bold text-gray-700">{bm.weight_pct}%</td>
+                                                    <td className="px-3 py-2 text-right font-mono text-gray-600">{bm.kr_price > 0 ? bm.kr_price.toLocaleString() : 'N/A'}</td>
+                                                    <td className="px-3 py-2 text-right font-bold">{bm.shares}주</td>
+                                                    <td className="px-3 py-2 text-right font-mono text-gray-600">{formatKRW(bm.alloc_krw)}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Log Viewer */}
+            <LogViewer status={status} label="Global Screener" />
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
 //  Global Backtest Tab
 // ═══════════════════════════════════════════════════
 
@@ -1922,7 +2442,7 @@ function GlobalBacktestTab() {
 // ═══════════════════════════════════════════════════
 
 export default function MomentumPanel() {
-    const [activeMode, setActiveMode] = useState<'screener' | 'backtest' | 'global'>('screener');
+    const [activeMode, setActiveMode] = useState<'screener' | 'backtest' | 'global-screener' | 'global'>('screener');
 
     return (
         <div className="space-y-6">
@@ -1947,19 +2467,29 @@ export default function MomentumPanel() {
                     모멘텀 백테스트
                 </button>
                 <button
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-sm transition-all ${activeMode === 'global-screener'
+                        ? 'bg-indigo-100 text-indigo-800 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                    onClick={() => setActiveMode('global-screener')}
+                >
+                    <Globe className="w-4 h-4" />
+                    글로벌 스크리너
+                </button>
+                <button
                     className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-sm transition-all ${activeMode === 'global'
                         ? 'bg-indigo-100 text-indigo-800 shadow-sm'
                         : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
                     onClick={() => setActiveMode('global')}
                 >
-                    <Globe className="w-4 h-4" />
-                    글로벌 멀티에셋
+                    <TrendingUp className="w-4 h-4" />
+                    글로벌 백테스트
                 </button>
             </div>
 
             {/* Tab Content */}
             {activeMode === 'screener' && <ScreenerTab />}
             {activeMode === 'backtest' && <BacktestTab />}
+            {activeMode === 'global-screener' && <GlobalScreenerTab />}
             {activeMode === 'global' && <GlobalBacktestTab />}
         </div>
     );

@@ -346,6 +346,45 @@ async def get_momentum_screener_result():
         return {"status": "error", "detail": str(e)}
 
 
+class GlobalScreenerRequest(BaseModel):
+    preset: str = "balanced"
+    weight_method: str = "inverse_volatility"
+    capital: float = 1e8
+
+
+@router.post("/global-screener")
+async def run_global_screener(req: GlobalScreenerRequest):
+    """Run Global Multi-Asset Screener (KR ETF approximation)."""
+    preset = req.preset if req.preset in (
+        "growth", "growth_seeking", "balanced", "stability_seeking", "stable"
+    ) else "balanced"
+    weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
+    cmd = [
+        VPANDA_PYTHON, "-m", "backend.kiwoom.global_screener",
+        "--preset", preset,
+        "--weight", weight,
+        "--capital", str(req.capital),
+    ]
+    ok = pm.start("global-screener", cmd)
+    if not ok:
+        return {"message": "Global Screener is already running", "status": "running"}
+    return {"message": "Global Screener started", "status": "started"}
+
+
+@router.get("/global-screener/result")
+async def get_global_screener_result():
+    """Return the latest global screener result from JSON file."""
+    result_file = os.path.join(PROJECT_ROOT, "cache", "screener", "global_screener_latest.json")
+    if not os.path.isfile(result_file):
+        return {"status": "no_data", "data": None}
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            data = __import__('json').load(f)
+        return {"status": "ok", "data": _sanitize_nan(data)}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 class ScreenerRequest(BaseModel):
     top_n: int = 30
     strategy: str = "swing"
