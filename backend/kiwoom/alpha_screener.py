@@ -126,15 +126,21 @@ def run_screener(top_n: int = 30, strategy: str = "swing") -> dict:
                 "stk_nm": stk.get("stk_nm", "?"),
                 "theme_nm": stk.get("theme_nm", ""),
                 "close": float(bars[-1].get("cur_prc", 0)) if bars else 0,
-                "daily_return": round(indicators.get("surge_return", 0) or 0, 2), # UI에 급등 수익률 표시
-                "sma10": 0, # Pullback엔 없음
+                "daily_return": round(indicators.get("surge_return", 0) or 0, 2),
+                "sma10": 0,
                 "ema20": 0,
-                "sma20": round(indicators.get("vcr", 0) or 0, 2), # UI sma20 위치에 VCR 표시 
-                "disparity20": round(indicators.get("disparity_5", 0) or 0, 2), # 5일 이격도
+                "sma20": round(indicators.get("vcr", 0) or 0, 2),
+                "disparity20": round(indicators.get("disparity_5", 0) or 0, 2),
                 "adtv20": round((indicators.get("adtv20", 0) or 0) / 1e8, 1),
-                "rvol": round(indicators.get("surge_rvol", 0) or 0, 2), # surge rvol
+                "rvol": round(indicators.get("surge_rvol", 0) or 0, 2),
                 "atr5": round(atr or 0, 0),
-                "market_cap": round(indicators.get("frl", 0) or 0, 3), # UI market_cap 위치에 FRL 표시
+                "market_cap": round(indicators.get("frl", 0) or 0, 3),
+                # 풀백 전용 명시 필드
+                "vcr": round(indicators.get("vcr", 0) or 0, 2),
+                "frl": round(indicators.get("frl", 0) or 0, 3),
+                "surge_return": round(indicators.get("surge_return", 0) or 0, 2),
+                "surge_rvol": round(indicators.get("surge_rvol", 0) or 0, 2),
+                "disparity_5": round(indicators.get("disparity_5", 0) or 0, 2),
             })
     else:
         for stk in passed_stocks:

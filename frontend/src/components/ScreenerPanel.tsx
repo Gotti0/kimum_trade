@@ -18,6 +18,12 @@ interface ScreenedStock {
     rvol: number;
     atr5: number;
     market_cap: number;  // 억 단위
+    // 풀백 전용 필드
+    vcr?: number;
+    frl?: number;
+    surge_return?: number;
+    surge_rvol?: number;
+    disparity_5?: number;
 }
 
 interface FilterResult {
@@ -145,7 +151,7 @@ export default function ScreenerPanel() {
                             </h2>
                             <p className="text-sm text-gray-500">
                                 {strategy === 'pullback'
-                                    ? '유동성 → 급등(Surge) → 거래량 감소율(VCR) → 피보나치 되돌림(FRL) → 이격도(Disp)'
+                                    ? '급등(Surge) → VCR(거래량감소) → FRL(피보나치) → 이격도 | 슬리피지·거리기반 매도 반영'
                                     : '유동성 → RVOL → 모멘텀 → 이격도 4단계 필터링'}
                             </p>
                         </div>
@@ -312,10 +318,10 @@ export default function ScreenerPanel() {
                                         {strategy === 'pullback' ? '급등 수익률' : '수익률'} <SortIcon field="daily_return" />
                                     </th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('rvol')}>
-                                        {strategy === 'pullback' ? '급등 RVOL' : 'RVOL'} <SortIcon field="rvol" />
+                                        {strategy === 'pullback' ? 'Surge RVOL' : 'RVOL'} <SortIcon field="rvol" />
                                     </th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('disparity20')}>
-                                        {strategy === 'pullback' ? '이격(5일)' : '이격도'} <SortIcon field="disparity20" />
+                                        {strategy === 'pullback' ? 'Disp(5EMA)' : '이격도'} <SortIcon field="disparity20" />
                                     </th>
                                     {strategy !== 'pullback' && <th className="px-3 py-2 text-right">SMA10</th>}
                                     {strategy !== 'pullback' && <th className="px-3 py-2 text-right">EMA20</th>}
@@ -367,13 +373,13 @@ export default function ScreenerPanel() {
                                             </td>
                                         )}
                                         {strategy === 'pullback' && (
-                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold ${stk.sma20 <= 0.35 ? 'text-blue-600' : 'text-gray-500'}`}>
-                                                {stk.sma20.toFixed(2)}
+                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold ${(stk.vcr ?? stk.sma20) <= 0.35 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                                                {(stk.vcr ?? stk.sma20).toFixed(2)}
                                             </td>
                                         )}
                                         {strategy === 'pullback' && (
-                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold text-gray-700`}>
-                                                {stk.market_cap.toFixed(3)}
+                                            <td className={`px-3 py-2.5 text-right font-mono text-xs font-bold ${(stk.frl ?? stk.market_cap) >= 0.382 && (stk.frl ?? stk.market_cap) <= 0.618 ? 'text-emerald-600' : 'text-orange-600'}`}>
+                                                {(stk.frl ?? stk.market_cap).toFixed(3)}
                                             </td>
                                         )}
                                         <td className="px-3 py-2.5 text-right font-mono text-gray-500 text-xs">
