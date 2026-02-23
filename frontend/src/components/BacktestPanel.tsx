@@ -33,6 +33,7 @@ const STRATEGY_CONFIG = {
 
 export default function BacktestPanel() {
     const [strategy, setStrategy] = useState<Strategy>('legacy');
+    const [mode, setMode] = useState<'daily' | 'minute'>('daily');
     const [status, setStatus] = useState<PipelineStatus>({ name: 'kiwoom-backtest', status: 'idle', logs: [] });
     const [days, setDays] = useState(10);
     const [capital, setCapital] = useState(10000000);
@@ -58,7 +59,7 @@ export default function BacktestPanel() {
     }, [status.logs]);
 
     const startBacktest = () => {
-        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy })
+        axios.post(`${API}/kiwoom-backtest`, { days, capital, strategy, mode: strategy === 'swing' ? mode : 'daily' })
             .catch(err => alert('실행 실패: ' + err.message));
     };
 
@@ -193,6 +194,25 @@ export default function BacktestPanel() {
                             <div className="bg-white rounded-lg p-2.5 border border-violet-100">
                                 <div className="text-gray-500">이격도 캡</div>
                                 <div className="font-bold text-gray-800 mt-0.5">100~112</div>
+                            </div>
+                        </div>
+
+                        {/* Mode Selection for Swing */}
+                        <div className="mt-4 pt-4 border-t border-violet-100 flex items-center justify-between">
+                            <div className="text-sm font-medium text-violet-800">데이터 모드</div>
+                            <div className="flex bg-white rounded-lg border border-violet-200 overflow-hidden divide-x divide-violet-100">
+                                <button
+                                    onClick={() => setMode('daily')}
+                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'daily' ? 'bg-violet-100 text-violet-800' : 'text-gray-500 hover:bg-violet-50'}`}
+                                >
+                                    일봉 전용 (장기)
+                                </button>
+                                <button
+                                    onClick={() => setMode('minute')}
+                                    className={`px-4 py-2 text-xs font-bold transition-colors ${mode === 'minute' ? 'bg-violet-100 text-violet-800' : 'text-gray-500 hover:bg-violet-50'}`}
+                                >
+                                    분봉 기반 (~60일)
+                                </button>
                             </div>
                         </div>
                     </div>

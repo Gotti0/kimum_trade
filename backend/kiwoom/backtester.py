@@ -30,6 +30,9 @@ os.makedirs(DAILY_CACHE_DIR, exist_ok=True)
 # API 호출 간 딜레이 (초) — 레이트 리밋 방지
 API_DELAY = 0.35
 
+# 마찰 비용 상수 (왕복 0.345%)
+FRICTION_COST = 0.00345
+
 
 class ThemeBacktester:
     """테마 기반 백테스팅을 실행합니다."""
@@ -364,7 +367,16 @@ class ThemeBacktester:
                     # 매도 전략 실행
                     result = self.sell_engine.execute(sell_bars, buy_price, upper_limit_price)
 
-                    day_returns.append(result["return_rate"] / 100)
+                    # 마찰 비용 적용 (왕복 0.345%)
+                    sell_price_after_friction = result["sell_price"] * (1 - FRICTION_COST / 2)
+                    buy_price_with_friction = buy_price * (1 + FRICTION_COST / 2)
+                    
+                    if buy_price_with_friction > 0:
+                        ret_after_friction = (sell_price_after_friction - buy_price_with_friction) / buy_price_with_friction
+                    else:
+                        ret_after_friction = 0.0
+
+                    day_returns.append(ret_after_friction)
 
                     trade_record = {
                         "day_offset": day_offset,
@@ -375,7 +387,9 @@ class ThemeBacktester:
                         "stk_nm": stk_nm,
                         "buy_price": buy_price,
                         "sell_price": result["sell_price"],
-                        "return_rate": result["return_rate"],
+                        "sell_price_after_friction": sell_price_after_friction,
+                        "return_rate": ret_after_friction * 100,
+                        "original_return_rate": result["return_rate"],
                         "sell_reason": result["sell_reason"],
                         "hit_upper_limit": result["hit_upper_limit"],
                     }
@@ -403,8 +417,9 @@ class ThemeBacktester:
 
         summary = (
             f"\n{'='*70}\n"
-            f"  백테스팅 완료\n"
+            f"  백테스팅 완료 [ThemeBacktester]\n"
             f"  기간: {start_days_ago}영업일전 → 현재\n"
+            f"  마찰 비용: 왕복 {FRICTION_COST*100:.3f}%\n"
             f"  총 거래 횟수: {len(trades)}건\n"
             f"  초기 자본금: {self.initial_capital:>15,.0f}원\n"
             f"  최종 자본금: {final_capital:>15,.0f}원\n"
@@ -432,8 +447,7 @@ from backend.kiwoom.buy_strategy import BuyStrategyEngine
 from backend.kiwoom.sell_strategy import SwingSellStrategyEngine, compute_atr
 from backend.kiwoom.risk_manager import RegimeFilter, PositionSizer
 
-# 마찰 비용 상수 (왕복)
-FRICTION_COST = 0.00345  # 0.345%
+from backend.kiwoom.risk_manager import RegimeFilter, PositionSizer
 
 
 class SwingBacktester:
@@ -569,13 +583,23 @@ class SwingBacktester:
                 break
         return result
 
+    def _get_daily_bar_for_date(self, stk_cd: str, target_date: str) -> dict:
+        """특정 날짜의 일봉 1개를 반환합니다. 없으면 빈 dict."""
+        all_bars = self._get_daily_chart_cached(stk_cd)
+        for bar in all_bars:
+            if bar.get("dt") == target_date:
+                return bar
+        return {}
+
     # ── 메인 백테스팅 루프 ─────────────────────────────────
 
-    def run(self, start_days_ago: int = 60) -> dict:
+    def run(self, start_days_ago: int = 60, use_daily_only: bool = True) -> dict:
         """스윙 백테스팅을 실행합니다.
 
         Args:
             start_days_ago: 시작일 (N 영업일 전)
+            use_daily_only: True면 일봉만 사용 (장기 백테스팅 가능),
+                            False면 기존 분봉 기반 로직 사용.
 
         Returns:
             {'initial_capital', 'final_capital', 'total_return',
@@ -588,8 +612,9 @@ class SwingBacktester:
         trades: list[dict] = []     # 완료된 거래
         portfolio_history: list[dict] = []  # 일별 포트폴리오 가치
 
+        data_mode = "일봉 전용" if use_daily_only else "분봉 기반"
         logger.info("=" * 70)
-        logger.info("  스윙 백테스팅 시작: %d 영업일 전 → 현재", start_days_ago)
+        logger.info("  스윙 백테스팅 시작: %d 영업일 전 → 현재 [%s]", start_days_ago, data_mode)
         logger.info("  초기 자본금: %s원", f"{capital:,.0f}")
         logger.info("  전략: ATR(5)×2.5 트레일링 스톱, 최대 5일 보유")
         logger.info("=" * 70)
@@ -644,24 +669,35 @@ class SwingBacktester:
 
                 stk_cd = pos["stk_cd"]
 
-                # 분봉 가져오기
-                day_minute_bars = self._get_minute_chart_cached(stk_cd, current_date)
-
                 # 스톱 라인 체크
                 stop_line = pos["stop_line"]
                 triggered = False
                 sell_price = 0.0
                 sell_time = "CLOSE"
 
-                for bar in day_minute_bars:
-                    low = _parse_price(bar.get("low_pric", "0"))
-                    if low > 0 and low <= stop_line:
-                        sell_price = _parse_price(bar.get("cur_prc", "0"))
-                        if sell_price <= 0:
-                            sell_price = stop_line
-                        sell_time = bar.get("cntr_tm", "")[8:12] if len(bar.get("cntr_tm", "")) >= 12 else "????"
-                        triggered = True
-                        break
+                if use_daily_only:
+                    # ── 일봉 전용 모드 ──
+                    day_bar = self._get_daily_bar_for_date(stk_cd, current_date)
+                    if day_bar:
+                        low = _parse_price(day_bar.get("low_pric", "0"))
+                        if low > 0 and low <= stop_line:
+                            sell_price = stop_line  # 스톱가로 체결 가정
+                            sell_time = "STOP"
+                            triggered = True
+                    day_close = _parse_price(day_bar.get("cur_prc", "0")) if day_bar else 0.0
+                else:
+                    # ── 기존 분봉 모드 ──
+                    day_minute_bars = self._get_minute_chart_cached(stk_cd, current_date)
+                    for bar in day_minute_bars:
+                        low = _parse_price(bar.get("low_pric", "0"))
+                        if low > 0 and low <= stop_line:
+                            sell_price = _parse_price(bar.get("cur_prc", "0"))
+                            if sell_price <= 0:
+                                sell_price = stop_line
+                            sell_time = bar.get("cntr_tm", "")[8:12] if len(bar.get("cntr_tm", "")) >= 12 else "????"
+                            triggered = True
+                            break
+                    day_close = _parse_price(day_minute_bars[-1].get("cur_prc", "0")) if day_minute_bars else 0.0
 
                 # 만기 청산
                 force_close = days_held >= self.sell_engine.max_hold_days
@@ -669,8 +705,8 @@ class SwingBacktester:
                 if triggered or force_close:
                     if not triggered:
                         # 종가 매도
-                        if day_minute_bars:
-                            sell_price = _parse_price(day_minute_bars[-1].get("cur_prc", "0"))
+                        if day_close > 0:
+                            sell_price = day_close
                         else:
                             sell_price = pos["buy_price"]
 
@@ -710,12 +746,10 @@ class SwingBacktester:
                     )
                 else:
                     # 스톱 라인 갱신 (래칫)
-                    if day_minute_bars:
-                        day_close = _parse_price(day_minute_bars[-1].get("cur_prc", "0"))
-                        if day_close > 0:
-                            new_stop = day_close - pos["stop_distance"]
-                            if new_stop > stop_line:
-                                pos["stop_line"] = new_stop
+                    if day_close > 0:
+                        new_stop = day_close - pos["stop_distance"]
+                        if new_stop > stop_line:
+                            pos["stop_line"] = new_stop
 
             for cp in closed_positions:
                 positions.remove(cp)
@@ -754,10 +788,15 @@ class SwingBacktester:
                     indicators = stk.get("indicators", {})
 
                     # 매수가 산출
-                    buy_bars = self._get_minute_chart_cached(stk_cd, current_date)
-                    buy_result = self.buy_engine.execute(buy_bars, 1_000_000)  # dummy
+                    if use_daily_only:
+                        # 일봉 종가 매수
+                        entry_bar = self._get_daily_bar_for_date(stk_cd, current_date)
+                        buy_price = _parse_price(entry_bar.get("cur_prc", "0")) if entry_bar else 0.0
+                    else:
+                        buy_bars = self._get_minute_chart_cached(stk_cd, current_date)
+                        buy_result = self.buy_engine.execute(buy_bars, 1_000_000)  # dummy
+                        buy_price = buy_result["avg_buy_price"]
 
-                    buy_price = buy_result["avg_buy_price"]
                     if buy_price <= 0:
                         continue
 
@@ -905,6 +944,13 @@ if __name__ == "__main__":
         choices=["legacy", "swing"],
         help="전략 선택: legacy(기존 1일), swing(스윙 3~5일)"
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="daily",
+        choices=["daily", "minute"],
+        help="데이터 모드: daily(일봉 전용, 장기 가능), minute(분봉 기반, ~60일)"
+    )
     
     args = parser.parse_args()
 
@@ -923,9 +969,13 @@ if __name__ == "__main__":
 
     if args.strategy == "swing":
         backtester = SwingBacktester(initial_capital=args.capital)
+        result = backtester.run(
+            start_days_ago=args.days,
+            use_daily_only=(args.mode == "daily"),
+        )
     else:
         backtester = ThemeBacktester(initial_capital=args.capital)
-
-    result = backtester.run(start_days_ago=args.days)
+        result = backtester.run(start_days_ago=args.days)
     print(result["summary"])
+    print(f"\n  데이터 모드: {args.mode}")
 

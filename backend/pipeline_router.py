@@ -107,6 +107,7 @@ class KiwoomBacktestRequest(BaseModel):
     days: int = 99
     capital: float = 10_000_000
     strategy: str = "legacy"  # "legacy" or "swing"
+    mode: str = "daily"       # "daily" or "minute" (스윙용)
 
 
 # ── Endpoints ──
@@ -190,7 +191,12 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     
     # Run as a module to avoid import errors
     strategy = req.strategy if req.strategy in ("legacy", "swing") else "legacy"
-    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.backtester", str(req.days), "--capital", str(req.capital), "--strategy", strategy]
+    mode = req.mode if req.mode in ("daily", "minute") else "daily"
+    cmd = [
+        VPANDA_PYTHON, "-m", "backend.kiwoom.backtester",
+        str(req.days), "--capital", str(req.capital),
+        "--strategy", strategy, "--mode", mode
+    ]
     ok = pm.start("kiwoom-backtest", cmd)
     if not ok:
         return {"message": "Kiwoom Backtest is already running", "status": "running"}
