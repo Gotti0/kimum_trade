@@ -31,11 +31,73 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 API_DELAY = 0.35
 
 
+def _build_volume_universe(finder: TopThemeFinder, top_n: int = 100) -> list[dict]:
+    """ka10030 API로 당일 거래량 상위 N개 종목을 조회합니다.
+
+    백테스터의 거래량 기반 유니버스와 동일한 소스를 사용하여
+    백테스트-라이브 간 일관성을 보장합니다.
+    """
+    logger.info("[1/3] 거래량 상위 %d 종목 수집 중 (ka10030)...", top_n)
+
+    token = finder._get_token()
+    url = f"{finder.domain}/api/dostk/rkinfo"
+    headers = {
+        "api-id": "ka10030",
+        "authorization": f"Bearer {token}",
+        "Content-Type": "application/json;charset=UTF-8",
+    }
+    payload = {
+        "mrkt_tp": "000",
+        "sort_tp": "1",
+        "mang_stk_incls": "1",
+        "crd_tp": "0",
+        "trde_qty_tp": "0",
+        "pric_tp": "0",
+        "trde_prica_tp": "0",
+        "mrkt_open_tp": "0",
+        "stex_tp": "1",
+    }
+
+    universe: list[dict] = []
+    seen: set[str] = set()
+    cont_yn = ""
+    next_key = ""
+
+    for _ in range(10):
+        if cont_yn == "Y":
+            headers["cont-yn"] = "Y"
+            headers["next-key"] = next_key
+
+        resp = finder._request_with_retry(url, headers, payload)
+        data = resp.json()
+        items = data.get("tdy_trde_qty_upper", [])
+
+        for item in items:
+            cd = item.get("stk_cd", "")
+            nm = item.get("stk_nm", "")
+            if cd and cd not in seen:
+                seen.add(cd)
+                universe.append({"stk_cd": cd, "stk_nm": nm})
+
+        if len(universe) >= top_n:
+            break
+
+        cont_yn = resp.headers.get("cont-yn", "N")
+        next_key = resp.headers.get("next-key", "")
+        if cont_yn != "Y" or not items:
+            break
+        time.sleep(API_DELAY)
+
+    universe = universe[:top_n]
+    logger.info("  거래량 상위 %d 종목 수집 완료.", len(universe))
+    return universe
+
+
 def run_screener(top_n: int = 30, strategy: str = "swing") -> dict:
     """알파 필터 또는 스윙-풀백 스크리너를 실행합니다.
 
     Args:
-        top_n: 상위 몇 개 테마를 조회할지.
+        top_n: swing=상위 테마 수, pullback=거래량 Top-N 종목 수.
         strategy: "swing" 또는 "pullback"
 
     Returns:
@@ -49,33 +111,43 @@ def run_screener(top_n: int = 30, strategy: str = "swing") -> dict:
 
     logger.info("=" * 60)
     logger.info("  %s 스크리너 시작", "풀백(Pullback)" if strategy == "pullback" else "알파(Swing)")
-    logger.info("  상위 %d개 테마 조회", top_n)
+    if strategy == "pullback":
+        logger.info("  거래량 상위 %d 종목 유니버스", top_n)
+    else:
+        logger.info("  상위 %d개 테마 조회", top_n)
     logger.info("=" * 60)
 
-    # 1. 상위 테마의 종목 수집
-    logger.info("[1/3] 상위 테마 종목 수집 중...")
-    themes = finder.get_top_themes(days_ago=1, top_n=top_n)
+    # 1. 유니버스 구축 (전략별 분기)
+    themes: list[dict] = []
     all_candidates: list[dict] = []
     seen_codes: set[str] = set()
     theme_map: dict[str, str] = {}
 
-    for theme in themes:
-        cd = theme.get("thema_grp_cd")
-        nm = theme.get("thema_nm", "?")
-        if not cd:
-            continue
-        time.sleep(API_DELAY)
-        stocks = finder.get_theme_stocks(cd, days_ago=1)
-        for stk in stocks:
-            stk_cd = stk.get("stk_cd", "")
-            if stk_cd and stk_cd not in seen_codes:
-                seen_codes.add(stk_cd)
-                stk["theme_nm"] = nm
-                stk["thema_grp_cd"] = cd
-                all_candidates.append(stk)
-                theme_map[stk_cd] = nm
+    if strategy == "pullback":
+        # 거래량 기반 유니버스 (백테스터와 동일한 소스)
+        all_candidates = _build_volume_universe(finder, top_n)
+    else:
+        # 테마 기반 유니버스
+        logger.info("[1/3] 상위 테마 종목 수집 중...")
+        themes = finder.get_top_themes(days_ago=1, top_n=top_n)
 
-    logger.info("  수집 완료: %d개 테마, %d개 종목", len(themes), len(all_candidates))
+        for theme in themes:
+            cd = theme.get("thema_grp_cd")
+            nm = theme.get("thema_nm", "?")
+            if not cd:
+                continue
+            time.sleep(API_DELAY)
+            stocks = finder.get_theme_stocks(cd, days_ago=1)
+            for stk in stocks:
+                stk_cd = stk.get("stk_cd", "")
+                if stk_cd and stk_cd not in seen_codes:
+                    seen_codes.add(stk_cd)
+                    stk["theme_nm"] = nm
+                    stk["thema_grp_cd"] = cd
+                    all_candidates.append(stk)
+                    theme_map[stk_cd] = nm
+
+        logger.info("  수집 완료: %d개 테마, %d개 종목", len(themes), len(all_candidates))
 
     # 2. 일봉 데이터 수집
     logger.info("[2/3] 일봉 데이터 수집 중 (%d개 종목)...", len(all_candidates))

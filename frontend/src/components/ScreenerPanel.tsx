@@ -233,11 +233,13 @@ export default function ScreenerPanel() {
                         </select>
                     </div>
                     <div className="flex-shrink-0">
-                        <label className="block text-sm font-medium text-gray-700 mb-1">상위 테마 수</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {strategy === 'pullback' ? '거래량 Top-N' : '상위 테마 수'}
+                        </label>
                         <input
                             type="number"
                             min="5"
-                            max="100"
+                            max={strategy === 'pullback' ? 500 : 100}
                             className="w-24 border border-gray-200 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-emerald-500 outline-none"
                             value={topN}
                             onChange={e => setTopN(Number(e.target.value))}
@@ -279,8 +281,12 @@ export default function ScreenerPanel() {
                         <div className="text-sm text-gray-500 mt-1">전체 후보</div>
                     </div>
                     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
-                        <div className="text-2xl font-bold text-blue-600">{data.total_themes}</div>
-                        <div className="text-sm text-gray-500 mt-1">조회 테마</div>
+                        <div className="text-2xl font-bold text-blue-600">
+                            {strategy === 'pullback' ? data.total_candidates : data.total_themes}
+                        </div>
+                        <div className="text-sm text-gray-500 mt-1">
+                            {strategy === 'pullback' ? '유니버스(Vol)' : '조회 테마'}
+                        </div>
                     </div>
                     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 text-center">
                         <div className="text-2xl font-bold text-gray-400">
@@ -312,7 +318,7 @@ export default function ScreenerPanel() {
                                 <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase">
                                     <th className="px-3 py-2 text-left">#</th>
                                     <th className="px-3 py-2 text-left">종목</th>
-                                    <th className="px-3 py-2 text-left">테마</th>
+                                    {strategy !== 'pullback' && <th className="px-3 py-2 text-left">테마</th>}
                                     <th className="px-3 py-2 text-right">종가</th>
                                     <th className="px-3 py-2 text-right cursor-pointer select-none hover:text-emerald-600" onClick={() => handleSort('daily_return')}>
                                         {strategy === 'pullback' ? '급등 수익률' : '수익률'} <SortIcon field="daily_return" />
@@ -341,11 +347,13 @@ export default function ScreenerPanel() {
                                             <div className="font-medium text-gray-800">{stk.stk_nm}</div>
                                             <div className="text-[10px] text-gray-400">{stk.stk_cd}</div>
                                         </td>
-                                        <td className="px-3 py-2.5">
-                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100">
-                                                {stk.theme_nm}
-                                            </span>
-                                        </td>
+                                        {strategy !== 'pullback' && (
+                                            <td className="px-3 py-2.5">
+                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100">
+                                                    {stk.theme_nm}
+                                                </span>
+                                            </td>
+                                        )}
                                         <td className="px-3 py-2.5 text-right font-mono text-gray-700">
                                             {stk.close.toLocaleString()}
                                         </td>
@@ -415,7 +423,7 @@ export default function ScreenerPanel() {
                                 <thead className="sticky top-0 bg-gray-50">
                                     <tr className="border-b text-gray-500">
                                         <th className="px-3 py-2 text-left">종목</th>
-                                        <th className="px-3 py-2 text-left">테마</th>
+                                        {strategy !== 'pullback' && <th className="px-3 py-2 text-left">테마</th>}
                                         <th className="px-3 py-2 text-right">종가</th>
                                         <th className="px-3 py-2 text-right">수익률</th>
                                         <th className="px-3 py-2 text-left">탈락 사유</th>
@@ -425,7 +433,7 @@ export default function ScreenerPanel() {
                                     {rejectedStocks.map(stk => (
                                         <tr key={stk.stk_cd} className="hover:bg-red-50/30 text-gray-500">
                                             <td className="px-3 py-1.5">{stk.stk_nm} <span className="text-gray-300">({stk.stk_cd})</span></td>
-                                            <td className="px-3 py-1.5">{stk.theme_nm}</td>
+                                            {strategy !== 'pullback' && <td className="px-3 py-1.5">{stk.theme_nm}</td>}
                                             <td className="px-3 py-1.5 text-right font-mono">{(stk.close || 0).toLocaleString()}</td>
                                             <td className="px-3 py-1.5 text-right font-mono">
                                                 {stk.daily_return ? `${stk.daily_return >= 0 ? '+' : ''}${stk.daily_return}%` : '-'}
