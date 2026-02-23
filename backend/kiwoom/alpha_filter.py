@@ -2,10 +2,10 @@
 AlphaFilter: 스윙 전략을 위한 4단계 유니버스 필터링 엔진.
 
 필터 파이프라인:
-  1. 유동성 허들  — 20일 ADTV ≥ 500억, 시총 ≥ 3000억
-  2. RVOL 허들   — 당일 거래대금 / 20일 ADTV ≥ 2.5
+  1. 유동성 허들  — 20일 ADTV ≥ 50억, 시총 ≥ 3000억
+  2. RVOL 허들   — 당일 거래대금 / 20일 ADTV ≥ 1.5
   3. 모멘텀 허들  — 종가 > SMA(10) AND 종가 > EMA(20) AND 일일 수익률 ≥ +4%
-  4. 이격도 캡    — 100 < (종가/SMA(20)×100) ≤ 112
+  4. 이격도 캡    — 100 < (종가/SMA(20)×100) ≤ 120
 
 Reference:
   KOSPI 모멘텀_스윙 알고리즘 전략 설계.md §2
@@ -19,12 +19,12 @@ from backend.kiwoom.sell_strategy import _parse_price
 logger = logging.getLogger(__name__)
 
 # ── 상수 ────────────────────────────────────────────────────
-ADTV_THRESHOLD = 500_0000_0000       # 500억 원
+ADTV_THRESHOLD = 50_0000_0000         # 50억 원
 MARKET_CAP_THRESHOLD = 3000_0000_0000  # 3,000억 원
-RVOL_THRESHOLD = 2.5
+RVOL_THRESHOLD = 1.5
 DAILY_RETURN_THRESHOLD = 4.0          # +4%
 DISPARITY_LOWER = 100.0
-DISPARITY_UPPER = 112.0
+DISPARITY_UPPER = 120.0
 
 SMA_SHORT_PERIOD = 10   # 단기 SMA
 EMA_PERIOD = 20          # 지수이동평균

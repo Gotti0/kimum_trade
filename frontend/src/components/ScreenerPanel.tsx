@@ -163,11 +163,11 @@ export default function ScreenerPanel() {
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                         <div className="bg-white rounded-lg p-2.5 border border-gray-100">
                             <div className="text-gray-500">① 유동성</div>
-                            <div className="font-bold text-gray-800 mt-0.5">ADTV ≥ 500억, 시총 ≥ 3000억</div>
+                            <div className="font-bold text-gray-800 mt-0.5">ADTV ≥ 50억, 시총 ≥ 3000억</div>
                         </div>
                         <div className="bg-white rounded-lg p-2.5 border border-gray-100">
                             <div className="text-gray-500">② RVOL</div>
-                            <div className="font-bold text-gray-800 mt-0.5">당일 거래대금 / 20일 ADTV ≥ 2.5</div>
+                            <div className="font-bold text-gray-800 mt-0.5">당일 거래대금 / 20일 ADTV ≥ 1.5</div>
                         </div>
                         <div className="bg-white rounded-lg p-2.5 border border-gray-100">
                             <div className="text-gray-500">③ 모멘텀</div>
@@ -175,7 +175,7 @@ export default function ScreenerPanel() {
                         </div>
                         <div className="bg-white rounded-lg p-2.5 border border-gray-100">
                             <div className="text-gray-500">④ 이격도</div>
-                            <div className="font-bold text-gray-800 mt-0.5">100 {'<'} (종가/SMA20×100) ≤ 112</div>
+                            <div className="font-bold text-gray-800 mt-0.5">100 {'<'} (종가/SMA20×100) ≤ 120</div>
                         </div>
                     </div>
                 </div>
