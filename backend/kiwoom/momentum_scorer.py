@@ -6,14 +6,17 @@ MomentumScorer: 듀얼 모멘텀 평가 및 유니버스 필터링 모듈.
   2. 상대 모멘텀(Relative Momentum) — 3/6/12개월 수익률 합산 스코어
   3. 절대 모멘텀(Absolute Momentum) — 12개월 수익률 < 0% 종목 제거
   4. 최종 Top-N 종목 선정
+  5. [확장] 글로벌 자산군(Asset Class) 모멘텀 스코어링 (Layer 1)
+  6. [확장] 프리셋 기반 전략적 배분 + 전술적 모멘텀 조정 (select_global_assets)
 
 설계 문서 참조:
   §3.1 동적 유니버스 필터링
   §3.2 듀얼 모멘텀 스코어링 로직
+  §2-4 2계층 모멘텀 스코어링
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
 
 import pandas as pd
 import numpy as np
@@ -263,6 +266,196 @@ class MomentumScorer:
         result.sort_values("rank", inplace=True)
         return result
 
+    # ═══════════════════════════════════════════════════
+    #  Layer 1: 글로벌 자산군(Asset Class) 모멘텀 스코어링
+    # ═══════════════════════════════════════════════════
+
+    def score_asset_classes(
+        self,
+        global_prices: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """각 글로벌 ETF(자산군)의 3/6/12M 수익률 + 복합 스코어 + 절대모멘텀 통과 여부.
+
+        Args:
+            global_prices: 기준일까지의 글로벌 ETF 종가 DataFrame.
+                           열 = 티커(SPY, AGG, …), 행 = 날짜.
+
+        Returns:
+            DataFrame(index=ticker, columns=[ret_3m, ret_6m, ret_12m, score, abs_pass, rank])
+        """
+        if global_prices.empty or len(global_prices) < LOOKBACK_3M + 1:
+            logger.warning("글로벌 가격 데이터가 부족합니다 (%d행).", len(global_prices))
+            return pd.DataFrame()
+
+        ret_3m = self._calculate_returns(global_prices, LOOKBACK_3M)
+        ret_6m = self._calculate_returns(global_prices, LOOKBACK_6M)
+        ret_12m = self._calculate_returns(global_prices, LOOKBACK_12M)
+
+        score = (ret_3m + ret_6m + ret_12m) / 3.0
+        abs_pass = ret_12m >= self.risk_free_rate
+
+        result = pd.DataFrame(
+            {
+                "ret_3m": ret_3m,
+                "ret_6m": ret_6m,
+                "ret_12m": ret_12m,
+                "score": score,
+                "abs_pass": abs_pass,
+            },
+            index=global_prices.columns,
+        )
+
+        # 절대 모멘텀 통과 종목만 순위 부여
+        valid = result.loc[result["abs_pass"], "score"].rank(ascending=False)
+        result["rank"] = np.nan
+        result.loc[valid.index, "rank"] = valid
+
+        result.sort_values("score", ascending=False, inplace=True)
+
+        logger.info(
+            "자산군 모멘텀 스코어링 완료: %d 티커, 절대모멘텀 통과 %d개",
+            len(result),
+            int(result["abs_pass"].sum()),
+        )
+
+        return result
+
+    def select_global_assets(
+        self,
+        global_prices: pd.DataFrame,
+        kr_prices: pd.DataFrame,
+        kr_trading_value: pd.DataFrame,
+        preset: Optional[dict] = None,
+    ) -> Tuple[Dict[str, float], List[str]]:
+        """프리셋의 전략적 배분을 기반으로 모멘텀 스코어링 + 국내 Top-N 선정.
+
+        3-Layer 로직:
+          Layer 0: 프리셋의 카테고리별 기본 비중 로드
+          Layer 1: 카테고리 내 ETF들의 모멘텀 스코어로 비중 분할
+                   + 절대 모멘텀 탈락 ETF 비중 → SHY로 이전
+          Layer 2: kr_equity(EWY) 비중 → 국내 개별종목 Top-N으로 세분화
+
+        Args:
+            global_prices: 기준일까지의 글로벌 ETF 종가 DataFrame.
+            kr_prices: 기준일까지의 국내 종목 종가 DataFrame.
+            kr_trading_value: 기준일까지의 국내 거래대금 DataFrame.
+            preset: 포트폴리오 프리셋 dict (PORTFOLIO_PRESETS 값).
+                    None이면 balanced 프리셋 사용.
+
+        Returns:
+            (asset_weights, kr_top_n_codes)
+            - asset_weights: {티커: 비중} 예) {"SPY": 0.18, "SHY": 0.15, ...}
+            - kr_top_n_codes: 국내 개별종목 Top-N 코드 리스트
+        """
+        from backend.kiwoom.momentum_asset_classes import (
+            CATEGORY_TO_TICKERS,
+            CASH_TICKER,
+            get_preset,
+        )
+
+        # ── Layer 0: 전략적 배분 로드 ──
+        if preset is None:
+            preset = get_preset("balanced")
+
+        strategic_weights = preset["weights"]
+        logger.info(
+            "프리셋 '%s' 전략적 배분: %s",
+            preset.get("label", "?"),
+            {k: f"{v:.0%}" for k, v in strategic_weights.items()},
+        )
+
+        # ── Layer 1: 자산군 모멘텀 스코어링 ──
+        ac_scores = self.score_asset_classes(global_prices)
+
+        # 티커별 최종 비중 집계
+        asset_weights: Dict[str, float] = {}
+        shy_overflow = 0.0  # 절대 모멘텀 탈락분을 SHY로 이전할 누적치
+
+        for category, cat_weight in strategic_weights.items():
+            if cat_weight <= 0:
+                continue
+
+            tickers_in_cat = CATEGORY_TO_TICKERS.get(category, [])
+            if not tickers_in_cat:
+                continue
+
+            # 카테고리 내 ETF 중 global_prices에 존재하는 것만 필터
+            available = [t for t in tickers_in_cat if t in ac_scores.index]
+            if not available:
+                # 데이터가 없는 카테고리 → 전량 SHY
+                shy_overflow += cat_weight
+                continue
+
+            # 카테고리 내 ETF별 상대 모멘텀 스코어 추출
+            cat_scores = ac_scores.loc[available]
+
+            # 절대 모멘텀 통과 ETF만
+            passed = cat_scores[cat_scores["abs_pass"]]
+            failed = cat_scores[~cat_scores["abs_pass"]]
+
+            # 탈락 ETF 비중 → SHY
+            if len(available) > 0:
+                failed_share = len(failed) / len(available)
+                shy_overflow += cat_weight * failed_share
+                remaining_weight = cat_weight * (1 - failed_share)
+            else:
+                remaining_weight = 0.0
+
+            if passed.empty or remaining_weight <= 0:
+                continue
+
+            # 통과 ETF들 간 상대 모멘텀 비중 분할
+            # 스코어가 모두 동일하거나 NaN이면 균등 배분
+            scores_valid = passed["score"].fillna(0)
+            score_min = scores_valid.min()
+
+            # 스코어를 양수로 이동 (최솟값이 0이 되도록)
+            shifted = scores_valid - score_min + 1e-8
+            total_shifted = shifted.sum()
+
+            if total_shifted <= 0:
+                # 균등 배분
+                for ticker in passed.index:
+                    w = remaining_weight / len(passed)
+                    asset_weights[ticker] = asset_weights.get(ticker, 0) + w
+            else:
+                for ticker in passed.index:
+                    w = remaining_weight * (shifted[ticker] / total_shifted)
+                    asset_weights[ticker] = asset_weights.get(ticker, 0) + w
+
+        # SHY에 탈락분 합산
+        if shy_overflow > 0:
+            asset_weights[CASH_TICKER] = asset_weights.get(CASH_TICKER, 0) + shy_overflow
+            logger.info(
+                "절대 모멘텀 탈락분 → SHY 이전: %.2f%%",
+                shy_overflow * 100,
+            )
+
+        # ── Layer 2: kr_equity(EWY) → 국내 개별종목 Top-N ──
+        kr_top_n_codes: List[str] = []
+
+        ewy_weight = asset_weights.get("EWY", 0)
+        if ewy_weight > 0 and not kr_prices.empty and not kr_trading_value.empty:
+            kr_top_n_codes = self.select_assets(kr_prices, kr_trading_value)
+            logger.info(
+                "Layer 2: EWY %.2f%% → 국내 Top-%d 종목으로 세분화",
+                ewy_weight * 100,
+                len(kr_top_n_codes),
+            )
+
+        # 비중 합계 정규화 (반올림 오차 보정)
+        total = sum(asset_weights.values())
+        if total > 0 and abs(total - 1.0) > 1e-6:
+            asset_weights = {k: v / total for k, v in asset_weights.items()}
+
+        logger.info(
+            "최종 자산 배분 (%d 티커): %s",
+            len(asset_weights),
+            {k: f"{v:.2%}" for k, v in sorted(asset_weights.items(), key=lambda x: -x[1])},
+        )
+
+        return asset_weights, kr_top_n_codes
+
 
 # ═══════════════════════════════════════════════════════
 #  테스트/검증용 CLI
@@ -279,53 +472,114 @@ if __name__ == "__main__":
 
     from backend.kiwoom.momentum_data_handler import MomentumDataHandler
 
-    # 1. 데이터 로드
+    global_only = "--global" in sys.argv
+
     handler = MomentumDataHandler(finder=None)
-    n = handler.load_from_cache()
-
-    if n == 0:
-        logger.error("캐시에 일봉 데이터가 없습니다.")
-        sys.exit(1)
-
-    handler.build_dataframes()
-
-    # 2. 마지막 영업일 기준 스코어링
-    dates = handler.get_available_dates()
-    last_date = dates[-1]
-
-    hist_prices, hist_tv, kospi_val, kospi_sma = handler.get_data_up_to(last_date)
-
     scorer = MomentumScorer(top_n=20, min_trading_value=5e9)
 
-    # 2-1. 전체 스코어링 결과
-    score_df = scorer.score_universe(hist_prices, hist_tv)
+    # ── 국내 종목 스코어링 ──
+    if not global_only:
+        n = handler.load_from_cache()
+        if n == 0:
+            logger.warning("캐시에 국내 일봉 데이터가 없습니다.")
+        else:
+            handler.build_dataframes()
+            dates = handler.get_available_dates()
+            last_date = dates[-1]
+            hist_prices, hist_tv, kospi_val, kospi_sma = handler.get_data_up_to(last_date)
 
+            score_df = scorer.score_universe(hist_prices, hist_tv)
+
+            print(f"\n{'='*70}")
+            print(f"  듀얼 모멘텀 스코어링 결과 ({last_date.date()})")
+            print(f"{'='*70}")
+            print(f"  유니버스 종목:  {len(score_df)}개")
+            print(f"  절대 모멘텀 통과: {score_df['abs_pass'].sum()}개")
+            print()
+
+            top20 = score_df.head(20)
+            print(f"  {'Rank':>4}  {'Code':<8}  {'3M':>8}  {'6M':>8}  {'12M':>8}  {'Score':>8}")
+            print(f"  {'-'*4}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}")
+
+            for _, row in top20.iterrows():
+                rank = int(row["rank"]) if pd.notna(row["rank"]) else "-"
+                code = row.name
+                print(
+                    f"  {rank:>4}  {code:<8}  "
+                    f"{row['ret_3m']*100:>+7.1f}%  "
+                    f"{row['ret_6m']*100:>+7.1f}%  "
+                    f"{row['ret_12m']*100:>+7.1f}%  "
+                    f"{row['score']*100:>+7.1f}%"
+                )
+
+            print()
+            selected = scorer.select_assets(hist_prices, hist_tv)
+            print(f"  select_assets() → {len(selected)}개 종목: {selected[:5]}...")
+            print(f"{'='*70}")
+
+    # ── 글로벌 자산군 스코어링 ──
     print(f"\n{'='*70}")
-    print(f"  듀얼 모멘텀 스코어링 결과 ({last_date.date()})")
+    print(f"  글로벌 자산군 모멘텀 스코어링 (Layer 1 + Layer 2)")
     print(f"{'='*70}")
-    print(f"  유니버스 종목:  {len(score_df)}개")
-    print(f"  절대 모멘텀 통과: {score_df['abs_pass'].sum()}개")
-    print()
 
-    # 2-2. Top-20 출력
-    top20 = score_df.head(20)
-    print(f"  {'Rank':>4}  {'Code':<8}  {'3M':>8}  {'6M':>8}  {'12M':>8}  {'Score':>8}")
-    print(f"  {'-'*4}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}")
+    try:
+        handler.load_global_data()
+        handler.build_global_dataframes()
 
-    for _, row in top20.iterrows():
-        rank = int(row["rank"]) if pd.notna(row["rank"]) else "-"
-        code = row.name
-        print(
-            f"  {rank:>4}  {code:<8}  "
-            f"{row['ret_3m']*100:>+7.1f}%  "
-            f"{row['ret_6m']*100:>+7.1f}%  "
-            f"{row['ret_12m']*100:>+7.1f}%  "
-            f"{row['score']*100:>+7.1f}%"
-        )
+        g_dates = handler._global_trading_days
+        g_last = g_dates[-1]
+        g_prices, g_sma = handler.get_global_data_up_to(g_last)
 
-    print()
+        # Layer 1: 자산군 스코어
+        ac_scores = scorer.score_asset_classes(g_prices)
+        print(f"\n  자산군 모멘텀 스코어 ({g_last.date()}):")
+        print(f"  {'Ticker':<6}  {'3M':>8}  {'6M':>8}  {'12M':>8}  {'Score':>8}  {'AbsPass':>8}  {'Rank':>5}")
+        print(f"  {'-'*6}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*5}")
 
-    # 2-3. select_assets 결과
-    selected = scorer.select_assets(hist_prices, hist_tv)
-    print(f"  select_assets() → {len(selected)}개 종목: {selected[:5]}...")
-    print(f"{'='*70}")
+        for ticker, row in ac_scores.iterrows():
+            rank = int(row["rank"]) if pd.notna(row["rank"]) else "-"
+            abs_mark = "✓" if row["abs_pass"] else "✗"
+            print(
+                f"  {ticker:<6}  "
+                f"{row['ret_3m']*100:>+7.1f}%  "
+                f"{row['ret_6m']*100:>+7.1f}%  "
+                f"{row['ret_12m']*100:>+7.1f}%  "
+                f"{row['score']*100:>+7.1f}%  "
+                f"{abs_mark:>8}  "
+                f"{rank:>5}"
+            )
+
+        # Layer 1+2: 프리셋별 자산 배분
+        from backend.kiwoom.momentum_asset_classes import PORTFOLIO_PRESETS, get_preset
+
+        for preset_key in ["growth", "balanced", "stable"]:
+            preset = get_preset(preset_key)
+            print(f"\n  {'─'*60}")
+            print(f"  프리셋: {preset['icon']} {preset['label']} (risk {preset['risk_level']})")
+            print(f"  {'─'*60}")
+
+            # 국내 데이터가 있으면 사용, 없으면 빈 DataFrame
+            kr_p = handler.prices if not handler.prices.empty else pd.DataFrame()
+            kr_tv = handler.trading_value if not handler.trading_value.empty else pd.DataFrame()
+
+            weights, kr_codes = scorer.select_global_assets(
+                g_prices, kr_p, kr_tv, preset=preset
+            )
+
+            print(f"\n  {'Ticker':<6}  {'Weight':>8}")
+            print(f"  {'-'*6}  {'-'*8}")
+            for t, w in sorted(weights.items(), key=lambda x: -x[1]):
+                if w > 0:
+                    bar = "█" * int(w * 50)
+                    print(f"  {t:<6}  {w:>7.1%}  {bar}")
+
+            total_w = sum(weights.values())
+            print(f"\n  합계: {total_w:.4f}")
+
+            if kr_codes:
+                print(f"  국내 Top-N: {kr_codes[:5]}{'...' if len(kr_codes) > 5 else ''}")
+
+    except Exception as e:
+        logger.error("글로벌 스코어링 실패: %s", e)
+        import traceback
+        traceback.print_exc()

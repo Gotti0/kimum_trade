@@ -265,6 +265,51 @@ async def get_momentum_result():
         return {"status": "error", "detail": str(e)}
 
 
+# ── 글로벌 멀티에셋 듀얼 모멘텀 ──
+
+class GlobalMomentumBacktestRequest(BaseModel):
+    capital: float = 100_000_000
+    portfolio_preset: str = "balanced"  # growth, growth_seeking, balanced, stability_seeking, stable
+    months: int = 12
+    full: bool = False
+
+
+@router.post("/global-momentum-backtest")
+async def run_global_momentum_backtest(req: GlobalMomentumBacktestRequest):
+    """Run Global Multi-Asset Dual Momentum Backtester."""
+    preset = req.portfolio_preset if req.portfolio_preset in (
+        "growth", "growth_seeking", "balanced", "stability_seeking", "stable"
+    ) else "balanced"
+    cmd = [
+        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_backtester",
+        "--global",
+        "--preset", preset,
+        "--capital", str(req.capital),
+        "--months", str(req.months),
+        "--save-json",
+    ]
+    if req.full:
+        cmd.append("--full")
+    ok = pm.start("global-momentum-backtest", cmd)
+    if not ok:
+        return {"message": "Global Momentum Backtest is already running", "status": "running"}
+    return {"message": f"Global Momentum Backtest started (preset: {preset})", "status": "started"}
+
+
+@router.get("/global-momentum-backtest/result")
+async def get_global_momentum_result():
+    """Return the latest global momentum backtest result from JSON file."""
+    result_file = os.path.join(PROJECT_ROOT, "cache", "momentum", "global_latest_result.json")
+    if not os.path.isfile(result_file):
+        return {"status": "no_data", "data": None}
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            data = __import__('json').load(f)
+        return {"status": "ok", "data": _sanitize_nan(data)}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 class MomentumScreenerRequest(BaseModel):
     top_n: int = 20
     weight_method: str = "inverse_volatility"

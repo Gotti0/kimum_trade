@@ -84,6 +84,12 @@ class MomentumDataHandler:
         self.kospi: pd.Series = pd.Series(dtype=float)
         self.kospi_sma200: pd.Series = pd.Series(dtype=float)
 
+        # ── 글로벌 데이터 (별도 DataFrame) ──
+        self._raw_global_charts: dict[str, list[dict]] = {}
+        self.global_prices: pd.DataFrame = pd.DataFrame()   # 열 = 티커(SPY, AGG, ...)
+        self.global_sma200: pd.DataFrame = pd.DataFrame()   # SMA200 (shift(1))
+        self._global_trading_days: pd.DatetimeIndex = pd.DatetimeIndex([])
+
         # ── 메타데이터 ──
         self._trading_days: pd.DatetimeIndex = pd.DatetimeIndex([])
         self._month_end_dates: pd.DatetimeIndex = pd.DatetimeIndex([])
@@ -372,6 +378,165 @@ class MomentumDataHandler:
         return pd.Series(dtype=float)
 
     # ═══════════════════════════════════════════════════
+    #  3-G. 글로벌 데이터 로드 & DataFrame 구축
+    # ═══════════════════════════════════════════════════
+
+    def load_global_data(self, force_refresh: bool = False) -> int:
+        """GlobalDataFetcher로 글로벌 ETF 데이터를 로드합니다.
+
+        Args:
+            force_refresh: True이면 캐시 무시하고 yfinance 재수집.
+
+        Returns:
+            로드된 글로벌 ETF 수.
+        """
+        from backend.kiwoom.global_data_fetcher import GlobalDataFetcher
+
+        fetcher = GlobalDataFetcher()
+        data = fetcher.fetch_all(force_refresh=force_refresh)
+        self._raw_global_charts = data
+
+        logger.info("글로벌 ETF %d개 로드 완료.", len(data))
+        return len(data)
+
+    def build_global_dataframes(self) -> None:
+        """글로벌 ETF 종가 DataFrame + SMA200을 구축합니다.
+
+        구축되는 DataFrame:
+          - global_prices: 종가 (ffill 적용), 열 = 티커, 행 = 미국 영업일
+          - global_sma200: 200일 이동평균, shift(1) 적용 (미래 참조 차단)
+        """
+        if not self._raw_global_charts:
+            raise RuntimeError(
+                "글로벌 데이터가 로드되지 않았습니다. load_global_data()를 먼저 호출하세요."
+            )
+
+        logger.info("글로벌 DataFrame 구축 시작 (%d 티커)...", len(self._raw_global_charts))
+
+        price_series: dict[str, pd.Series] = {}
+
+        for ticker, bars in self._raw_global_charts.items():
+            dates: list[pd.Timestamp] = []
+            closes: list[float] = []
+
+            for bar in bars:
+                dt_str = bar.get("dt", "")
+                close = bar.get("close", 0)
+                if not dt_str or close is None or close <= 0:
+                    continue
+
+                try:
+                    dt = pd.Timestamp(dt_str)
+                except Exception:
+                    continue
+
+                dates.append(dt)
+                closes.append(float(close))
+
+            if len(dates) >= 20:
+                price_series[ticker] = pd.Series(closes, index=dates, name=ticker)
+
+        if not price_series:
+            raise RuntimeError("유효한 글로벌 ETF 데이터가 없습니다.")
+
+        # ── DataFrame 합병 (outer join, 미국 영업일 기준) ──
+        self.global_prices = pd.DataFrame(price_series)
+        self.global_prices.sort_index(inplace=True)
+
+        # 중복 인덱스 제거
+        self.global_prices = self.global_prices[
+            ~self.global_prices.index.duplicated(keep="last")
+        ]
+
+        # 결측치: ffill (미국 공휴일 등으로 인한 개별 ETF 미거래일 보간)
+        self.global_prices = self.global_prices.ffill()
+
+        # ── SMA(200) 산출, shift(1) 적용 ──
+        self.global_sma200 = (
+            self.global_prices
+            .rolling(window=200, min_periods=200)
+            .mean()
+            .shift(1)
+        )
+
+        self._global_trading_days = self.global_prices.index
+
+        logger.info(
+            "글로벌 DataFrame 구축 완료: %d 티커 × %d 영업일 (%s ~ %s)",
+            len(self.global_prices.columns),
+            len(self._global_trading_days),
+            self._global_trading_days[0].strftime("%Y-%m-%d") if len(self._global_trading_days) else "?",
+            self._global_trading_days[-1].strftime("%Y-%m-%d") if len(self._global_trading_days) else "?",
+        )
+
+    def get_global_data_up_to(
+        self, date: pd.Timestamp
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """특정 시점까지의 글로벌 ETF 데이터 슬라이스를 반환합니다.
+
+        한국 월말과 미국 영업일이 다를 수 있으므로, date 이하의 가장
+        최근 미국 영업일 데이터를 ffill로 포함합니다.
+
+        Args:
+            date: 기준 날짜 (한국 월말 등)
+
+        Returns:
+            (global_prices[:date], global_sma200[:date])
+        """
+        prices_slice = self.global_prices.loc[:date]
+        sma_slice = self.global_sma200.loc[:date]
+        return prices_slice, sma_slice
+
+    def get_global_current_prices(self, date: pd.Timestamp) -> pd.Series:
+        """특정 날짜의 글로벌 ETF별 종가를 반환합니다.
+
+        정확히 해당 날짜 행이 없으면 가장 가까운 이전 미국 영업일 종가를 사용합니다.
+
+        Args:
+            date: 기준 날짜
+
+        Returns:
+            티커를 인덱스로 한 종가 Series
+        """
+        if self.global_prices.empty:
+            return pd.Series(dtype=float)
+
+        if date in self.global_prices.index:
+            return self.global_prices.loc[date]
+
+        mask = self.global_prices.index <= date
+        if mask.any():
+            return self.global_prices.loc[self.global_prices.index[mask][-1]]
+
+        return pd.Series(dtype=float)
+
+    def get_global_summary(self) -> str:
+        """글로벌 데이터 현황 요약 문자열을 반환합니다."""
+        if self.global_prices.empty:
+            return "글로벌 데이터 없음 (load_global_data + build_global_dataframes 미실행)"
+
+        n_tickers = len(self.global_prices.columns)
+        n_days = len(self._global_trading_days)
+        start = self._global_trading_days[0].strftime("%Y-%m-%d") if n_days else "N/A"
+        end = self._global_trading_days[-1].strftime("%Y-%m-%d") if n_days else "N/A"
+
+        sma_valid = not self.global_sma200.empty and self.global_sma200.notna().any().any()
+        tickers_list = ", ".join(sorted(self.global_prices.columns))
+
+        lines = [
+            "─" * 60,
+            "  글로벌 ETF 데이터 현황",
+            "─" * 60,
+            f"  티커 수:       {n_tickers:>8,d}",
+            f"  영업일 수:     {n_days:>8,d}",
+            f"  데이터 기간:   {start} ~ {end}",
+            f"  SMA(200):      {'✓' if sma_valid else '✗'} (shift(1) 적용)",
+            f"  티커 목록:     {tickers_list}",
+            "─" * 60,
+        ]
+        return "\n".join(lines)
+
+    # ═══════════════════════════════════════════════════
     #  4. 유틸리티
     # ═══════════════════════════════════════════════════
 
@@ -448,44 +613,80 @@ class MomentumDataHandler:
 # ═══════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    import sys
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[logging.StreamHandler()],
     )
 
+    # 실행 모드 선택: --global 플래그가 있으면 글로벌 전용, 아니면 기존 국내 + 글로벌 통합
+    global_only = "--global" in sys.argv
+
     handler = MomentumDataHandler(finder=None)  # 캐시 전용 모드
-    n = handler.load_from_cache()
 
-    if n == 0:
-        logger.error("캐시에 일봉 데이터가 없습니다. 먼저 다른 백테스터를 실행하여 캐시를 구축하세요.")
-    else:
-        handler.build_dataframes()
-        print(handler.summary())
+    # ── 국내 데이터 ──
+    if not global_only:
+        n = handler.load_from_cache()
+        if n == 0:
+            logger.warning("캐시에 국내 일봉 데이터가 없습니다.")
+        else:
+            handler.build_dataframes()
+            print(handler.summary())
 
-        # 샘플: 마지막 영업일 기준 get_data_up_to 테스트
-        dates = handler.get_available_dates()
-        if len(dates) > 0:
-            last_date = dates[-1]
-            hist_prices, hist_tv, kospi_val, kospi_sma = handler.get_data_up_to(
-                last_date
-            )
-            print(f"\n최근 영업일({last_date.date()}) 기준:")
-            print(f"  hist_prices shape: {hist_prices.shape}")
-            print(f"  hist_tv shape:     {hist_tv.shape}")
-            print(f"  KOSPI 종가:        {kospi_val:,.0f}")
-            print(f"  KOSPI SMA(200):    {kospi_sma:,.0f}")
+            dates = handler.get_available_dates()
+            if len(dates) > 0:
+                last_date = dates[-1]
+                hist_prices, hist_tv, kospi_val, kospi_sma = handler.get_data_up_to(
+                    last_date
+                )
+                print(f"\n최근 영업일({last_date.date()}) 기준:")
+                print(f"  hist_prices shape: {hist_prices.shape}")
+                print(f"  hist_tv shape:     {hist_tv.shape}")
+                print(f"  KOSPI 종가:        {kospi_val:,.0f}")
+                print(f"  KOSPI SMA(200):    {kospi_sma:,.0f}")
 
-            # ADTV 50억 이상 종목 수 확인
-            latest_tv = hist_tv.iloc[-1] if not hist_tv.empty else pd.Series(dtype=float)
-            eligible = latest_tv[latest_tv >= 5e9]
-            print(f"  ADTV ≥ 50억 종목:  {len(eligible)}개")
+                latest_tv = hist_tv.iloc[-1] if not hist_tv.empty else pd.Series(dtype=float)
+                eligible = latest_tv[latest_tv >= 5e9]
+                print(f"  ADTV ≥ 50억 종목:  {len(eligible)}개")
 
-            # 웜업 이후 실제 백테스트 가용일수
-            bt_dates = handler.get_backtest_window(warmup_days=252)
-            print(f"  백테스트 가용일수:  {len(bt_dates)}일")
+                bt_dates = handler.get_backtest_window(warmup_days=252)
+                print(f"  백테스트 가용일수:  {len(bt_dates)}일")
 
-            # 월말 리밸런싱 날짜 샘플
-            eom = handler.get_month_end_dates()
-            if len(eom) >= 3:
-                print(f"  월말 날짜 샘플:    {eom[-3].date()}, {eom[-2].date()}, {eom[-1].date()}")
+                eom = handler.get_month_end_dates()
+                if len(eom) >= 3:
+                    print(f"  월말 날짜 샘플:    {eom[-3].date()}, {eom[-2].date()}, {eom[-1].date()}")
+
+    # ── 글로벌 데이터 ──
+    print("\n" + "=" * 60)
+    print("  글로벌 ETF 데이터 로드 & DataFrame 구축")
+    print("=" * 60)
+
+    try:
+        n_global = handler.load_global_data()
+        handler.build_global_dataframes()
+        print(handler.get_global_summary())
+
+        # 샘플: 마지막 글로벌 영업일 기준 슬라이스
+        if not handler.global_prices.empty:
+            g_last = handler._global_trading_days[-1]
+            g_prices, g_sma = handler.get_global_data_up_to(g_last)
+            print(f"\n최근 미국 영업일({g_last.date()}) 기준:")
+            print(f"  global_prices shape: {g_prices.shape}")
+            print(f"  global_sma200 shape: {g_sma.shape}")
+
+            # 최신 종가 샘플
+            cur_prices = handler.get_global_current_prices(g_last)
+            print(f"\n  최신 종가 (USD):")
+            for ticker in sorted(cur_prices.index):
+                price = cur_prices[ticker]
+                sma_val = g_sma[ticker].iloc[-1] if ticker in g_sma.columns and not pd.isna(g_sma[ticker].iloc[-1]) else None
+                regime = ""
+                if sma_val is not None:
+                    regime = "BULL" if price >= sma_val else "BEAR"
+                    regime = f"  [{regime}] (SMA200=${sma_val:.2f})"
+                print(f"    {ticker:5s}: ${price:>10.2f}{regime}")
+
+    except Exception as e:
+        logger.error("글로벌 데이터 로드 실패: %s", e)

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle } from 'lucide-react';
+import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle, Globe } from 'lucide-react';
 import axios from 'axios';
-import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Area, AreaChart } from 'recharts';
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Area, AreaChart, Legend, Bar, BarChart } from 'recharts';
 
 const API = 'http://localhost:8001/api/pipeline';
 
@@ -65,6 +65,53 @@ interface MomentumResult {
     regime_summary: { BULL: number; BEAR: number };
     elapsed_sec: number;
 }
+
+// ── Global backtest types ──
+interface GlobalAllocation {
+    date: string;
+    weights: Record<string, number>;
+    regimes: Record<string, string>;
+    bull_count: number;
+    bear_count: number;
+}
+
+interface GlobalMomentumResult {
+    timestamp: string;
+    config: {
+        initial_capital: number;
+        top_n: number;
+        weight_method: string;
+        commission: number;
+        slippage: number;
+        warmup_days: number;
+        min_trading_value: number;
+        global_mode: boolean;
+        portfolio_preset: string;
+        preset_label: string;
+        risk_level: number;
+        strategic_weights: Record<string, string>;
+    };
+    metrics: MomentumMetrics & {
+        benchmark_cagr?: number;
+        benchmark_mdd?: number;
+        benchmark_total_return?: number;
+    };
+    equity_curve: Record<string, number>;
+    benchmark_equity: Record<string, number>;
+    trade_summary: Record<string, number>;
+    regime_summary: { BULL: number; BEAR: number };
+    global_allocation: GlobalAllocation[];
+    regime_by_class: Record<string, string>;
+    elapsed_sec: number;
+}
+
+const PRESET_INFO: Record<string, { emoji: string; label: string; risk: number; desc: string }> = {
+    growth: { emoji: '🚀', label: '성장형', risk: 5, desc: '주식 55% + 대체 25%, 고수익 최우선' },
+    growth_seeking: { emoji: '📈', label: '성장추구형', risk: 4, desc: '주식 50% 과반, 적극 자산 증식' },
+    balanced: { emoji: '⚖️', label: '위험중립형', risk: 3, desc: '위험:안전 5:5 균형 배분' },
+    stability_seeking: { emoji: '🛡️', label: '안정추구형', risk: 2, desc: '채권 60% 중심, 시중금리+α' },
+    stable: { emoji: '🏦', label: '안정형', risk: 1, desc: '채권 75%, 원금 보존 최우선' },
+};
 
 // ── Screener types ──
 interface ScreenedStock {
@@ -609,11 +656,11 @@ function ScreenerTab() {
                                                     </td>
                                                     <td className="px-3 py-1.5 font-mono text-gray-600">{stk.stk_cd}</td>
                                                     <td className="px-3 py-1.5 text-gray-800">{stk.stk_nm}</td>
-                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-600">{stk.close.toLocaleString()}</td>
-                                                    <td className={`px-3 py-1.5 text-right font-mono ${stk.ret_12m >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                                                        {stk.ret_12m >= 0 ? '+' : ''}{stk.ret_12m.toFixed(1)}%
+                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-600">{(stk.close ?? 0).toLocaleString()}</td>
+                                                    <td className={`px-3 py-1.5 text-right font-mono ${(stk.ret_12m ?? 0) >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                        {(stk.ret_12m ?? 0) >= 0 ? '+' : ''}{(stk.ret_12m ?? 0).toFixed(1)}%
                                                     </td>
-                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-700">{stk.score.toFixed(1)}%</td>
+                                                    <td className="px-3 py-1.5 text-right font-mono text-gray-700">{(stk.score ?? 0).toFixed(1)}%</td>
                                                     <td className="px-3 py-1.5 text-gray-400 truncate max-w-[200px]">{stk.reason}</td>
                                                 </tr>
                                             ))}
@@ -684,9 +731,17 @@ function BacktestTab() {
 
     const chartData = useMemo(() => {
         if (!result?.equity_curve) return [];
-        return Object.entries(result.equity_curve)
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([date, value]) => ({ date, value: Math.round(value), displayDate: date.slice(5) }));
+        const entries = Object.entries(result.equity_curve).sort(([a], [b]) => a.localeCompare(b));
+        if (entries.length === 0) return [];
+        const firstYear = entries[0][0].slice(0, 4);
+        const lastYear = entries[entries.length - 1][0].slice(0, 4);
+        const multiYear = firstYear !== lastYear;
+        return entries.map(([date, value]) => ({
+            date,
+            value: Math.round(value),
+            // 1년 이내: MM-DD, 복수 연도: YY-MM-DD
+            displayDate: multiYear ? date.slice(2) : date.slice(5),
+        }));
     }, [result]);
 
     const drawdownData = useMemo(() => {
@@ -972,11 +1027,605 @@ function BacktestTab() {
 }
 
 // ═══════════════════════════════════════════════════
+//  Global Backtest Tab
+// ═══════════════════════════════════════════════════
+
+function GlobalBacktestTab() {
+    const [status, setStatus] = useState<PipelineStatus>({ name: 'global-momentum-backtest', status: 'idle', logs: [] });
+    const [result, setResult] = useState<GlobalMomentumResult | null>(null);
+    const [capital, setCapital] = useState(100_000_000);
+    const [preset, setPreset] = useState('balanced');
+    const [months, setMonths] = useState(12);
+    const [fullPeriod, setFullPeriod] = useState(false);
+    const [showChart, setShowChart] = useState(true);
+    const [showAllocation, setShowAllocation] = useState(false);
+
+    const isRunning = status.status === 'running';
+
+    // Status polling
+    useEffect(() => {
+        const fetchStatus = () => {
+            axios.get(`${API}/status/global-momentum-backtest`)
+                .then(r => setStatus(r.data))
+                .catch(() => { });
+        };
+        fetchStatus();
+        const id = setInterval(fetchStatus, 3000);
+        return () => clearInterval(id);
+    }, []);
+
+    useEffect(() => {
+        if (status.status === 'finished' && status.exitCode === 0) loadResults();
+    }, [status.status, status.exitCode]);
+
+    useEffect(() => { loadResults(); }, []);
+
+    const loadResults = () => {
+        axios.get(`${API}/global-momentum-backtest/result`)
+            .then(r => { if (r.data.status === 'ok' && r.data.data) setResult(r.data.data); })
+            .catch(() => { });
+    };
+
+    const startBacktest = () => {
+        axios.post(`${API}/global-momentum-backtest`, {
+            capital, portfolio_preset: preset, months, full: fullPeriod,
+        }).catch(err => alert('실행 실패: ' + err.message));
+    };
+
+    const stopBacktest = () => {
+        axios.post(`${API}/stop`, { name: 'global-momentum-backtest' }).catch(() => { });
+    };
+
+    // Equity + Benchmark chart data
+    const chartData = useMemo(() => {
+        if (!result?.equity_curve) return [];
+        const entries = Object.entries(result.equity_curve).sort(([a], [b]) => a.localeCompare(b));
+        if (entries.length === 0) return [];
+        const bm = result.benchmark_equity ?? {};
+        const firstYear = entries[0][0].slice(0, 4);
+        const lastYear = entries[entries.length - 1][0].slice(0, 4);
+        const multiYear = firstYear !== lastYear;
+        return entries.map(([date, value]) => ({
+            date,
+            value: Math.round(value),
+            benchmark: Math.round(bm[date] ?? 0),
+            displayDate: multiYear ? date.slice(2) : date.slice(5),
+        }));
+    }, [result]);
+
+    // Drawdown data
+    const drawdownData = useMemo(() => {
+        if (chartData.length === 0) return [];
+        let peak = chartData[0].value;
+        let bmPeak = chartData[0].benchmark || chartData[0].value;
+        return chartData.map(d => {
+            if (d.value > peak) peak = d.value;
+            if (d.benchmark > bmPeak) bmPeak = d.benchmark;
+            const dd = peak > 0 ? ((d.value - peak) / peak) * 100 : 0;
+            const bmDd = bmPeak > 0 ? ((d.benchmark - bmPeak) / bmPeak) * 100 : 0;
+            return {
+                date: d.date, displayDate: d.displayDate,
+                drawdown: Math.round(dd * 100) / 100,
+                bmDrawdown: Math.round(bmDd * 100) / 100,
+            };
+        });
+    }, [chartData]);
+
+    // Asset allocation bar chart data (last rebalancing)
+    const allocationData = useMemo(() => {
+        if (!result?.global_allocation?.length) return [];
+        const last = result.global_allocation[result.global_allocation.length - 1];
+        return Object.entries(last.weights)
+            .filter(([, w]) => w > 0)
+            .sort(([, a], [, b]) => b - a)
+            .map(([ticker, w]) => ({
+                ticker,
+                weight: Math.round(w * 1000) / 10,
+                regime: last.regimes?.[ticker] ?? '?',
+            }));
+    }, [result]);
+
+    const metrics = result?.metrics ?? {};
+    const presetMeta = PRESET_INFO[result?.config?.portfolio_preset ?? preset] ?? PRESET_INFO.balanced;
+
+    return (
+        <div className="space-y-6">
+            {/* Controls */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center">
+                            <Globe className="w-6 h-6 text-indigo-600" />
+                        </div>
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-800">글로벌 멀티에셋 듀얼 모멘텀</h2>
+                            <p className="text-sm text-gray-500">ETF 13종 · 6개 자산군 · 프리셋 기반 전략적 자산배분 + 모멘텀</p>
+                        </div>
+                    </div>
+                    <StatusBadge s={status} />
+                </div>
+
+                {/* Strategy Info */}
+                <div className="mb-6 rounded-xl border p-4 bg-indigo-50/50 border-indigo-100">
+                    <div className="flex items-center gap-2 mb-3">
+                        <Shield className="w-4 h-4 text-indigo-500" />
+                        <span className="text-sm font-bold text-indigo-700">글로벌 전략 파라미터</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">자산군</div>
+                            <div className="font-bold text-gray-800 mt-0.5">6종 (ETF 13개)</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">국면 필터</div>
+                            <div className="font-bold text-gray-800 mt-0.5">SMA200 vs Price</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">리밸런싱</div>
+                            <div className="font-bold text-gray-800 mt-0.5">월말 (Monthly)</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">안전자산</div>
+                            <div className="font-bold text-gray-800 mt-0.5">SHY (단기국채)</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">벤치마크</div>
+                            <div className="font-bold text-gray-800 mt-0.5">60/40 (SPY+AGG)</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">비용 모델</div>
+                            <div className="font-bold text-gray-800 mt-0.5">0.07% + 0.05%</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">절대 모멘텀</div>
+                            <div className="font-bold text-gray-800 mt-0.5">12M {'>'} 0%</div>
+                        </div>
+                        <div className="bg-white rounded-lg p-2.5 border border-indigo-100">
+                            <div className="text-gray-500">한국 ETF</div>
+                            <div className="font-bold text-gray-800 mt-0.5">EWY (한국 주식)</div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Preset Selection */}
+                <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
+                        <Target className="w-4 h-4 text-gray-400" />
+                        포트폴리오 프리셋 선택
+                    </label>
+                    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                        {Object.entries(PRESET_INFO).map(([key, info]) => (
+                            <button
+                                key={key}
+                                className={`relative p-4 rounded-xl border-2 transition-all text-left ${preset === key
+                                    ? 'border-indigo-500 bg-indigo-50 shadow-md shadow-indigo-100'
+                                    : 'border-gray-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/30'}`}
+                                onClick={() => setPreset(key)}
+                                disabled={isRunning}
+                            >
+                                <div className="text-2xl mb-1">{info.emoji}</div>
+                                <div className="text-sm font-bold text-gray-800">{info.label}</div>
+                                <div className="text-xs text-gray-500 mt-0.5">{info.desc}</div>
+                                <div className="mt-2 flex gap-0.5">
+                                    {[1, 2, 3, 4, 5].map(i => (
+                                        <div
+                                            key={i}
+                                            className={`h-1.5 flex-1 rounded-full ${i <= info.risk
+                                                ? (info.risk >= 4 ? 'bg-red-400' : info.risk >= 3 ? 'bg-amber-400' : 'bg-emerald-400')
+                                                : 'bg-gray-200'}`}
+                                        />
+                                    ))}
+                                </div>
+                                {preset === key && (
+                                    <div className="absolute top-2 right-2">
+                                        <CheckCircle2 className="w-5 h-5 text-indigo-500" />
+                                    </div>
+                                )}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Parameters */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <DollarSign className="w-4 h-4 text-gray-400" />
+                            초기 자본금
+                        </label>
+                        <div className="relative">
+                            <input
+                                type="number"
+                                className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                                value={capital} onChange={e => setCapital(Number(e.target.value))} disabled={isRunning}
+                            />
+                            <span className="absolute right-4 top-3 text-gray-400 text-sm">원</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center gap-2">
+                            <Activity className="w-4 h-4 text-gray-400" />
+                            백테스트 기간
+                        </label>
+                        <div className="flex gap-2">
+                            {!fullPeriod && (
+                                <div className="relative flex-1">
+                                    <input
+                                        type="number" min={3} max={120}
+                                        className="w-full border border-gray-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                                        value={months} onChange={e => setMonths(Number(e.target.value))} disabled={isRunning}
+                                    />
+                                    <span className="absolute right-3 top-3 text-gray-400 text-sm">개월</span>
+                                </div>
+                            )}
+                            <button
+                                className={`px-3 py-2.5 rounded-lg text-xs font-bold transition-all border ${fullPeriod
+                                    ? 'bg-indigo-100 text-indigo-800 border-indigo-300 ring-1 ring-indigo-200'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:border-indigo-300'}`}
+                                onClick={() => setFullPeriod(!fullPeriod)} disabled={isRunning}
+                            >
+                                {fullPeriod ? '전체' : 'ALL'}
+                            </button>
+                        </div>
+                    </div>
+                    <div className="flex items-end">
+                        <div className="flex gap-3 w-full">
+                            <button
+                                className="flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-lg shadow-indigo-200 active:scale-[0.98]"
+                                onClick={startBacktest} disabled={isRunning}
+                            >
+                                <Play className="w-4 h-4" />
+                                글로벌 백테스트 시작
+                            </button>
+                            <button
+                                className="flex items-center justify-center px-4 py-2.5 rounded-xl font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition-all active:scale-[0.98]"
+                                onClick={stopBacktest} disabled={!isRunning}
+                            >
+                                <Square className="w-4 h-4" />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* ──────── Results ──────── */}
+            {result && (
+                <>
+                    {/* Preset Header */}
+                    <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-100 p-5 flex items-center gap-4">
+                        <div className="text-4xl">{presetMeta.emoji}</div>
+                        <div>
+                            <h3 className="text-lg font-bold text-gray-800">
+                                {result.config.preset_label ?? presetMeta.label}
+                                <span className="ml-2 text-sm font-normal text-gray-500">
+                                    (위험도 {result.config.risk_level ?? presetMeta.risk}/5)
+                                </span>
+                            </h3>
+                            <div className="flex flex-wrap gap-2 mt-1">
+                                {Object.entries(result.config.strategic_weights ?? {}).map(([cls, w]) => (
+                                    <span key={cls} className="text-xs bg-white px-2 py-0.5 rounded border border-indigo-100 text-gray-600">
+                                        {cls}: <span className="font-bold">{w}</span>
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Stat Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <StatCard label="총 수익률" value={formatPct(metrics.total_return)}
+                            color={(metrics.total_return ?? 0) >= 0 ? 'emerald' : 'red'}
+                            icon={<TrendingUp className="w-5 h-5" />} />
+                        <StatCard label="CAGR" value={formatPct(metrics.cagr)}
+                            color={(metrics.cagr ?? 0) >= 0 ? 'emerald' : 'red'}
+                            icon={<Percent className="w-5 h-5" />} />
+                        <StatCard label="MDD" value={formatPct(metrics.mdd)} color="red"
+                            icon={<Activity className="w-5 h-5" />} />
+                        <StatCard label="Sharpe Ratio" value={formatRatio(metrics.sharpe_ratio)}
+                            color={(metrics.sharpe_ratio ?? 0) >= 1 ? 'emerald' : 'amber'}
+                            icon={<BarChart3 className="w-5 h-5" />} />
+                    </div>
+
+                    {/* Benchmark Comparison */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-2">벤치마크 (60/40)</div>
+                            <div className="flex items-baseline gap-2">
+                                <span className="text-lg font-bold text-gray-600">
+                                    CAGR {formatPct(metrics.benchmark_cagr)}
+                                </span>
+                                <span className="text-sm text-gray-400">
+                                    MDD {formatPct(metrics.benchmark_mdd)}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-2">초과 수익 (Alpha)</div>
+                            <div className={`text-lg font-bold ${((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                                {((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) >= 0 ? '+' : ''}
+                                {(((metrics.cagr ?? 0) - (metrics.benchmark_cagr ?? 0)) * 100).toFixed(2)}%p
+                            </div>
+                        </div>
+                        <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                            <div className="text-xs text-gray-500 mb-2">최종 자산</div>
+                            <div className="text-lg font-bold text-gray-800">
+                                {metrics.final_equity ? formatKRW(metrics.final_equity) + '원' : '-'}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Detailed Metrics */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                        <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                            <BarChart3 className="w-5 h-5 text-indigo-500" />
+                            상세 성과 지표
+                        </h3>
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                            <MetricItem label="Sortino Ratio" value={formatRatio(metrics.sortino_ratio)} />
+                            <MetricItem label="Calmar Ratio" value={formatRatio(metrics.calmar_ratio)} />
+                            <MetricItem label="Profit Factor" value={formatRatio(metrics.profit_factor)} />
+                            <MetricItem label="일간 승률" value={formatPct(metrics.daily_win_rate)} />
+                            <MetricItem label="월간 승률" value={formatPct(metrics.monthly_win_rate)} />
+                            <MetricItem label="연환산 변동성" value={formatPct(metrics.annualized_volatility)} />
+                            <MetricItem label="MDD 지속" value={metrics.mdd_duration_days !== undefined ? `${metrics.mdd_duration_days}일` : '-'} />
+                            <MetricItem label="Best Day" value={formatPct(metrics.best_day)} />
+                            <MetricItem label="Worst Day" value={formatPct(metrics.worst_day)} />
+                            <MetricItem label="거래 횟수" value={metrics.total_trades !== undefined ? `${metrics.total_trades}회` : '-'} />
+                        </div>
+
+                        {/* 거래 & 국면 */}
+                        <div className="mt-6 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-700 mb-3">거래 요약</h4>
+                                <div className="flex flex-wrap gap-2">
+                                    {Object.entries(result.trade_summary).map(([action, cnt]) => (
+                                        <span key={action} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-gray-50 text-sm border border-gray-100">
+                                            <span className="font-bold text-gray-800">{action}</span>
+                                            <span className="text-gray-500">{cnt}회</span>
+                                        </span>
+                                    ))}
+                                    {metrics.total_friction !== undefined && (
+                                        <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 text-sm border border-red-100">
+                                            <span className="font-bold text-red-700">마찰비용</span>
+                                            <span className="text-red-600">{formatKRW(metrics.total_friction as number)}원</span>
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-700 mb-3">리밸런싱 이력</h4>
+                                <div className="text-xs text-gray-500">
+                                    총 {result.global_allocation?.length ?? 0}회 리밸런싱
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                            <div className="flex items-center justify-between text-xs text-gray-400">
+                                <span>
+                                    {result.config.preset_label} |
+                                    초기자본 {formatKRW(result.config.initial_capital)}원
+                                </span>
+                                <span>{result.timestamp} | {result.elapsed_sec}초 소요</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* ETF Regime Badges */}
+                    {result.regime_by_class && Object.keys(result.regime_by_class).length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                            <h3 className="text-sm font-bold text-gray-700 mb-4 flex items-center gap-2">
+                                <Shield className="w-4 h-4 text-indigo-500" />
+                                자산별 국면 현황 (최근)
+                            </h3>
+                            <div className="flex flex-wrap gap-2">
+                                {Object.entries(result.regime_by_class).map(([ticker, regime]) => (
+                                    <span
+                                        key={ticker}
+                                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold ${regime === 'BULL'
+                                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                            : 'bg-red-50 text-red-700 border border-red-200'}`}
+                                    >
+                                        <span className={`w-1.5 h-1.5 rounded-full ${regime === 'BULL' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                        {ticker}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Asset Allocation Bar Chart */}
+                    {allocationData.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                                <Target className="w-5 h-5 text-indigo-500" />
+                                <h3 className="text-lg font-bold text-gray-800">자산 배분 현황 (최근 리밸런싱)</h3>
+                            </div>
+                            <div className="px-6 pb-6 pt-4">
+                                <ResponsiveContainer width="100%" height={280}>
+                                    <BarChart data={allocationData} layout="vertical">
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                        <XAxis type="number" tick={{ fontSize: 11, fill: '#94a3b8' }}
+                                            tickFormatter={(v: number) => v.toFixed(1) + '%'} />
+                                        <YAxis type="category" dataKey="ticker" tick={{ fontSize: 12, fill: '#4b5563', fontWeight: 600 }} width={52} />
+                                        <Tooltip
+                                            formatter={(val: unknown) => [Number(val).toFixed(1) + '%', '비중']}
+                                            contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: 12 }}
+                                        />
+                                        <Bar dataKey="weight" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={20} />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Equity Curve with Benchmark Overlay */}
+                    {chartData.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <button
+                                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                                onClick={() => setShowChart(!showChart)}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <Activity className="w-5 h-5 text-indigo-500" />
+                                    <span className="text-lg font-bold text-gray-800">자산 가치 곡선 vs 벤치마크 (60/40)</span>
+                                </div>
+                                {showChart ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                            </button>
+                            {showChart && (
+                                <div className="px-6 pb-6">
+                                    <ResponsiveContainer width="100%" height={320}>
+                                        <AreaChart data={chartData}>
+                                            <defs>
+                                                <linearGradient id="globalEquityGrad" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                                                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                                                </linearGradient>
+                                                <linearGradient id="benchmarkGrad" x1="0" y1="0" x2="0" y2="1">
+                                                    <stop offset="5%" stopColor="#94a3b8" stopOpacity={0.15} />
+                                                    <stop offset="95%" stopColor="#94a3b8" stopOpacity={0} />
+                                                </linearGradient>
+                                            </defs>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                            <XAxis dataKey="displayDate" tick={{ fontSize: 11, fill: '#94a3b8' }}
+                                                interval={Math.max(1, Math.floor(chartData.length / 10))} />
+                                            <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }}
+                                                tickFormatter={(v: number) => formatKRW(v)} width={72} />
+                                            <Tooltip
+                                                formatter={(val: unknown, name?: string) => [
+                                                    formatKRW(Number(val)) + '원',
+                                                    name === 'value' ? '전략' : '벤치마크'
+                                                ]}
+                                                labelFormatter={(label: unknown) => `날짜: ${label}`}
+                                                contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: 12 }}
+                                            />
+                                            <Legend formatter={(value: string) => value === 'value' ? '전략' : '벤치마크 (60/40)'} />
+                                            <ReferenceLine y={result.config.initial_capital} stroke="#94a3b8" strokeDasharray="5 5"
+                                                label={{ value: '초기자본', position: 'left', fill: '#94a3b8', fontSize: 10 }} />
+                                            <Area type="monotone" dataKey="benchmark" stroke="#94a3b8" strokeWidth={1.5}
+                                                fill="url(#benchmarkGrad)" strokeDasharray="4 2" />
+                                            <Area type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={2}
+                                                fill="url(#globalEquityGrad)" />
+                                        </AreaChart>
+                                    </ResponsiveContainer>
+
+                                    {/* Drawdown */}
+                                    <div className="mt-4 pt-4 border-t border-gray-100">
+                                        <h4 className="text-sm font-bold text-gray-600 mb-2">낙폭 (Drawdown)</h4>
+                                        <ResponsiveContainer width="100%" height={140}>
+                                            <AreaChart data={drawdownData}>
+                                                <defs>
+                                                    <linearGradient id="globalDdGrad" x1="0" y1="0" x2="0" y2="1">
+                                                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
+                                                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
+                                                    </linearGradient>
+                                                </defs>
+                                                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                                                <XAxis dataKey="displayDate" tick={{ fontSize: 10, fill: '#94a3b8' }}
+                                                    interval={Math.max(1, Math.floor(drawdownData.length / 10))} />
+                                                <YAxis tick={{ fontSize: 10, fill: '#94a3b8' }}
+                                                    tickFormatter={(v: number) => v.toFixed(1) + '%'} width={52} />
+                                                <Tooltip
+                                                    formatter={(val: unknown, name?: string) => [
+                                                        Number(val).toFixed(2) + '%',
+                                                        name === 'drawdown' ? '전략 낙폭' : '벤치마크 낙폭'
+                                                    ]}
+                                                    labelFormatter={(label: unknown) => `날짜: ${label}`}
+                                                    contentStyle={{ borderRadius: '8px', border: '1px solid #fecaca', fontSize: 12 }}
+                                                />
+                                                <ReferenceLine y={0} stroke="#94a3b8" />
+                                                <Area type="monotone" dataKey="bmDrawdown" stroke="#94a3b8" strokeWidth={1}
+                                                    fill="none" strokeDasharray="3 3" />
+                                                <Area type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={1.5}
+                                                    fill="url(#globalDdGrad)" />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Allocation History Table */}
+                    {result.global_allocation && result.global_allocation.length > 0 && (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                            <button
+                                className="w-full flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                                onClick={() => setShowAllocation(!showAllocation)}
+                            >
+                                <div className="flex items-center gap-2">
+                                    <BarChart3 className="w-5 h-5 text-indigo-500" />
+                                    <span className="text-sm font-bold text-gray-700">
+                                        리밸런싱 이력 ({result.global_allocation.length}회)
+                                    </span>
+                                </div>
+                                {showAllocation ? <ChevronUp className="w-5 h-5 text-gray-400" /> : <ChevronDown className="w-5 h-5 text-gray-400" />}
+                            </button>
+                            {showAllocation && (
+                                <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
+                                    <table className="w-full text-xs">
+                                        <thead className="sticky top-0 bg-gray-50">
+                                            <tr className="border-b border-gray-200">
+                                                <th className="px-3 py-2 text-left font-semibold text-gray-500">#</th>
+                                                <th className="px-3 py-2 text-left font-semibold text-gray-500">날짜</th>
+                                                <th className="px-3 py-2 text-center font-semibold text-gray-500">BULL</th>
+                                                <th className="px-3 py-2 text-center font-semibold text-gray-500">BEAR</th>
+                                                <th className="px-3 py-2 text-left font-semibold text-gray-500">배분 (상위 5)</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {result.global_allocation.map((alloc, i) => {
+                                                const top5 = Object.entries(alloc.weights)
+                                                    .sort(([, a], [, b]) => b - a)
+                                                    .slice(0, 5);
+                                                return (
+                                                    <tr key={i} className="border-b border-gray-50 hover:bg-indigo-50/20">
+                                                        <td className="px-3 py-2 font-mono text-gray-400">{i + 1}</td>
+                                                        <td className="px-3 py-2 font-mono text-gray-700">{alloc.date}</td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 font-bold">
+                                                                {alloc.bull_count}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded bg-red-50 text-red-700 font-bold">
+                                                                {alloc.bear_count}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-2">
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {top5.map(([ticker, w]) => (
+                                                                    <span key={ticker} className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-gray-100 text-gray-700">
+                                                                        <span className="font-bold">{ticker}</span>
+                                                                        <span className="text-gray-400">{(w * 100).toFixed(1)}%</span>
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Log Viewer */}
+            <LogViewer status={status} label="Global Backtest" />
+        </div>
+    );
+}
+
+// ═══════════════════════════════════════════════════
 //  Main Panel (Dual Tab)
 // ═══════════════════════════════════════════════════
 
 export default function MomentumPanel() {
-    const [activeMode, setActiveMode] = useState<'screener' | 'backtest'>('screener');
+    const [activeMode, setActiveMode] = useState<'screener' | 'backtest' | 'global'>('screener');
 
     return (
         <div className="space-y-6">
@@ -1000,10 +1649,21 @@ export default function MomentumPanel() {
                     <TrendingUp className="w-4 h-4" />
                     모멘텀 백테스트
                 </button>
+                <button
+                    className={`flex-1 flex items-center justify-center gap-2 px-6 py-3 rounded-lg font-bold text-sm transition-all ${activeMode === 'global'
+                        ? 'bg-indigo-100 text-indigo-800 shadow-sm'
+                        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
+                    onClick={() => setActiveMode('global')}
+                >
+                    <Globe className="w-4 h-4" />
+                    글로벌 멀티에셋
+                </button>
             </div>
 
             {/* Tab Content */}
-            {activeMode === 'screener' ? <ScreenerTab /> : <BacktestTab />}
+            {activeMode === 'screener' && <ScreenerTab />}
+            {activeMode === 'backtest' && <BacktestTab />}
+            {activeMode === 'global' && <GlobalBacktestTab />}
         </div>
     );
 }
