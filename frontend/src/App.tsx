@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap, TrendingUp, Filter, Flame, BarChart3 } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap, TrendingUp, Filter, Flame, BarChart3, Briefcase, Search } from 'lucide-react';
 import { parseMiraeAssetCSV, parseMiraeAssetText } from './utils/csvParser';
 import type { SimulationResult, StockPosition } from './types';
 import axios from 'axios';
@@ -129,7 +129,9 @@ function App() {
   const [results, setResults] = useState<SimulationResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline' | 'backtest' | 'screener' | 'momentum' | 'compare'>('simulator');
+  const [activeTab, setActiveTab] = useState<'my-portfolio' | 'stock-analysis' | 'momentum' | 'pipeline'>('my-portfolio');
+  const [portfolioSubTab, setPortfolioSubTab] = useState<'dashboard' | 'analysis' | 'prompt' | 'compare'>('dashboard');
+  const [analysisSubTab, setAnalysisSubTab] = useState<'screener' | 'backtest'>('screener');
   const [promptCopied, setPromptCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [stockMap, setStockMap] = useState<Record<string, string>>({});
@@ -379,91 +381,66 @@ ${excludedSummary}
           <p className="text-gray-500 mt-2">미래에셋 잔고 CSV를 업로드하고 ATR 기반 최적의 손절 라인을 계산하세요.</p>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-gray-200 mb-6">
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 ${activeTab === 'simulator'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('simulator')}
-          >
-            시뮬레이터 대시보드
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'ai-prompt'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('ai-prompt')}
-          >
-            <MessageSquare className="w-4 h-4" />
-            AI 프롬프트 생성기
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'portfolio'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('portfolio')}
-          >
-            <PieChartIcon className="w-4 h-4" />
-            포트폴리오 분석
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'pipeline'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('pipeline')}
-          >
-            <Zap className="w-4 h-4" />
-            파이프라인
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'backtest'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('backtest')}
-          >
-            <TrendingUp className="w-4 h-4" />
-            백테스트
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'screener'
-              ? 'border-emerald-600 text-emerald-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('screener')}
-          >
-            <Filter className="w-4 h-4" />
-            스크리너
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'momentum'
-              ? 'border-amber-600 text-amber-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('momentum')}
-          >
-            <Flame className="w-4 h-4" />
-            모멘텀
-          </button>
-          <button
-            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'compare'
-              ? 'border-violet-600 text-violet-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            onClick={() => setActiveTab('compare')}
-          >
-            <BarChart3 className="w-4 h-4" />
-            비교분석
-          </button>
+        {/* Main Tabs */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-1.5 mb-6">
+          <div className="flex flex-wrap gap-1.5">
+            {([
+              { key: 'my-portfolio' as const, label: '내 포트폴리오', icon: <Briefcase className="w-4 h-4" />, color: 'blue' },
+              { key: 'stock-analysis' as const, label: '종목 분석', icon: <Search className="w-4 h-4" />, color: 'emerald' },
+              { key: 'momentum' as const, label: '모멘텀', icon: <Flame className="w-4 h-4" />, color: 'amber' },
+              { key: 'pipeline' as const, label: '파이프라인', icon: <Zap className="w-4 h-4" />, color: 'violet' },
+            ] as const).map(tab => {
+              const isActive = activeTab === tab.key;
+              const colorMap: Record<string, { active: string; hover: string }> = {
+                blue: { active: 'bg-blue-600 text-white shadow-md', hover: 'hover:bg-blue-50 text-gray-600' },
+                emerald: { active: 'bg-emerald-600 text-white shadow-md', hover: 'hover:bg-emerald-50 text-gray-600' },
+                amber: { active: 'bg-amber-500 text-white shadow-md', hover: 'hover:bg-amber-50 text-gray-600' },
+                violet: { active: 'bg-violet-600 text-white shadow-md', hover: 'hover:bg-violet-50 text-gray-600' },
+              };
+              const colors = colorMap[tab.color] || colorMap.blue;
+              return (
+                <button
+                  key={tab.key}
+                  className={`py-2.5 px-5 rounded-lg font-medium text-sm transition-all flex items-center gap-2 whitespace-nowrap ${
+                    isActive ? colors.active : colors.hover
+                  }`}
+                  onClick={() => setActiveTab(tab.key)}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        {/* Tab Content: Simulator */}
-        <div className={activeTab === 'simulator' ? 'space-y-6 block' : 'hidden'}>
+        {/* Tab Content: 내 포트폴리오 */}
+        <div className={activeTab === 'my-portfolio' ? 'space-y-6 block' : 'hidden'}>
+          {/* Sub Tabs */}
+          <div className="flex gap-1 border-b border-gray-200 pb-0">
+            {([
+              { key: 'dashboard' as const, label: '대시보드', icon: <Calculator className="w-3.5 h-3.5" /> },
+              { key: 'analysis' as const, label: '자산 분석', icon: <PieChartIcon className="w-3.5 h-3.5" /> },
+              { key: 'prompt' as const, label: 'AI 프롬프트', icon: <MessageSquare className="w-3.5 h-3.5" /> },
+              { key: 'compare' as const, label: '비교분석', icon: <BarChart3 className="w-3.5 h-3.5" /> },
+            ] as const).map(sub => (
+              <button
+                key={sub.key}
+                className={`py-2 px-4 text-sm font-medium transition-colors border-b-2 flex items-center gap-1.5 -mb-px ${
+                  portfolioSubTab === sub.key
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+                onClick={() => setPortfolioSubTab(sub.key)}
+              >
+                {sub.icon}
+                {sub.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Sub: 대시보드 */}
+          <div className={portfolioSubTab === 'dashboard' ? 'space-y-6' : 'hidden'}>
           {/* Top Controls Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -688,8 +665,13 @@ ${excludedSummary}
           </div>
         </div>
 
-        {/* Tab Content: AI Prompt */}
-        {activeTab === 'ai-prompt' && (
+          {/* Sub: 자산 분석 */}
+          {portfolioSubTab === 'analysis' && (
+            <PortfolioChart results={results} usdToKrw={usdToKrw} />
+          )}
+
+          {/* Sub: AI 프롬프트 */}
+          {portfolioSubTab === 'prompt' && (
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
               <div>
@@ -719,50 +701,65 @@ ${excludedSummary}
               {generateAIPrompt()}
             </div>
           </div>
+          )}
+
+          {/* Sub: 비교분석 */}
+          {portfolioSubTab === 'compare' && (
+            <PortfolioComparePanel
+              positions={results.map(r => ({
+                name: r.name,
+                quantity: r.quantity,
+                averagePrice: r.averagePrice,
+                currency: r.currency,
+                evalAmount: r.evalAmount,
+                assetType: r.assetType,
+                isSimTarget: r.isSimTarget,
+                ticker: r.ticker,
+              }))}
+              capital={capital}
+              usdToKrw={usdToKrw}
+              stockMap={stockMap}
+            />
+          )}
+        </div>
+
+        {/* Tab Content: 종목 분석 */}
+        {activeTab === 'stock-analysis' && (
+          <div className="space-y-6">
+            {/* Sub Tabs */}
+            <div className="flex gap-1 border-b border-gray-200 pb-0">
+              {([
+                { key: 'screener' as const, label: '스크리너', icon: <Filter className="w-3.5 h-3.5" /> },
+                { key: 'backtest' as const, label: '백테스트', icon: <TrendingUp className="w-3.5 h-3.5" /> },
+              ] as const).map(sub => (
+                <button
+                  key={sub.key}
+                  className={`py-2 px-4 text-sm font-medium transition-colors border-b-2 flex items-center gap-1.5 -mb-px ${
+                    analysisSubTab === sub.key
+                      ? 'border-emerald-600 text-emerald-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                  onClick={() => setAnalysisSubTab(sub.key)}
+                >
+                  {sub.icon}
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+
+            {analysisSubTab === 'screener' && <ScreenerPanel />}
+            {analysisSubTab === 'backtest' && <BacktestPanel />}
+          </div>
         )}
 
-        {/* Tab Content: Portfolio */}
-        {activeTab === 'portfolio' && (
-          <PortfolioChart results={results} usdToKrw={usdToKrw} />
-        )}
-
-        {/* Tab Content: Pipeline */}
-        {activeTab === 'pipeline' && (
-          <PipelinePanel />
-        )}
-
-        {/* Tab Content: Backtest */}
-        {activeTab === 'backtest' && (
-          <BacktestPanel />
-        )}
-
-        {/* Tab Content: Screener */}
-        {activeTab === 'screener' && (
-          <ScreenerPanel />
-        )}
-
-        {/* Tab Content: Momentum */}
+        {/* Tab Content: 모멘텀 */}
         {activeTab === 'momentum' && (
           <MomentumPanel />
         )}
 
-        {/* Tab Content: Compare */}
-        {activeTab === 'compare' && (
-          <PortfolioComparePanel
-            positions={results.map(r => ({
-              name: r.name,
-              quantity: r.quantity,
-              averagePrice: r.averagePrice,
-              currency: r.currency,
-              evalAmount: r.evalAmount,
-              assetType: r.assetType,
-              isSimTarget: r.isSimTarget,
-              ticker: r.ticker,
-            }))}
-            capital={capital}
-            usdToKrw={usdToKrw}
-            stockMap={stockMap}
-          />
+        {/* Tab Content: 파이프라인 */}
+        {activeTab === 'pipeline' && (
+          <PipelinePanel />
         )}
 
       </div>
