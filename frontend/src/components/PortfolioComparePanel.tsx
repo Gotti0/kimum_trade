@@ -502,18 +502,25 @@ export default function PortfolioComparePanel({ positions, capital, usdToKrw, st
         setLoadError(null);
 
         try {
+            // 백엔드 API는 { status, data } 래퍼로 감싸서 반환
+            type ApiWrapper<T> = { status: string; data: T | null };
+
             const results = await Promise.allSettled([
-                axios.get<ScreenerResult>(`${API}/momentum-screener/result`),
-                axios.get<GlobalScreenerResult>(`${API}/global-screener/result`),
+                axios.get<ApiWrapper<ScreenerResult>>(`${API}/momentum-screener/result`),
+                axios.get<ApiWrapper<GlobalScreenerResult>>(`${API}/global-screener/result`),
             ]);
 
             const [krRes, globalRes] = results;
 
-            if (krRes.status === 'fulfilled' && krRes.value.data?.passed_stocks) {
-                setKrScreener(krRes.value.data);
+            // 래퍼 내부의 .data 에서 실제 스크리너 결과를 꺼냄
+            const krData = krRes.status === 'fulfilled' ? krRes.value.data?.data : null;
+            const globalData = globalRes.status === 'fulfilled' ? globalRes.value.data?.data : null;
+
+            if (krData?.passed_stocks) {
+                setKrScreener(krData);
             }
-            if (globalRes.status === 'fulfilled' && globalRes.value.data?.kr_portfolio) {
-                setGlobalScreener(globalRes.value.data);
+            if (globalData?.kr_portfolio) {
+                setGlobalScreener(globalData);
             }
 
             // 에러 세분화: 서버 미실행 vs 스크리너 미실행 vs 데이터 없음
@@ -531,12 +538,12 @@ export default function PortfolioComparePanel({ positions, capital, usdToKrw, st
                 const partialErrors: string[] = [];
                 if (krRes.status === 'rejected') {
                     partialErrors.push('국내 스크리너 결과 없음');
-                } else if (krRes.status === 'fulfilled' && (!krRes.value.data?.passed_stocks || krRes.value.data.passed_stocks.length === 0)) {
+                } else if (!krData?.passed_stocks || krData.passed_stocks.length === 0) {
                     partialErrors.push('국내 스크리너 통과 종목 0건');
                 }
                 if (globalRes.status === 'rejected') {
                     partialErrors.push('글로벌 스크리너 결과 없음');
-                } else if (globalRes.status === 'fulfilled' && (!globalRes.value.data?.kr_portfolio || globalRes.value.data.kr_portfolio.length === 0)) {
+                } else if (!globalData?.kr_portfolio || globalData.kr_portfolio.length === 0) {
                     partialErrors.push('글로벌 스크리너 포트폴리오 0건');
                 }
                 if (partialErrors.length > 0) {

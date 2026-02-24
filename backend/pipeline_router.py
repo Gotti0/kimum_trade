@@ -410,7 +410,7 @@ async def get_screener_result():
     try:
         with open(result_file, "r", encoding="utf-8") as f:
             data = __import__('json').load(f)
-        return {"status": "ok", "data": data}
+        return {"status": "ok", "data": _sanitize_nan(data)}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
