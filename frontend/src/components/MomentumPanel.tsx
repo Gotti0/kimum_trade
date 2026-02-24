@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Play, Square, Terminal, TrendingUp, DollarSign, BarChart3, Target, Shield, ChevronDown, ChevronUp, Activity, Percent, Search, ArrowUpDown, CheckCircle2, XCircle, Globe, BookOpen, Info } from 'lucide-react';
 import axios from 'axios';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, Area, AreaChart, Legend, Bar, BarChart } from 'recharts';
+import type { ScreenerResult, GlobalScreenerResult } from '../types';
 
 const API = 'http://localhost:8001/api/pipeline';
 
@@ -180,54 +181,7 @@ const CATEGORY_WEIGHT_LABELS: Record<string, string> = {
     cash: '현금등가',
 };
 
-// ── Screener types ──
-interface ScreenedStock {
-    rank: number;
-    stk_cd: string;
-    stk_nm: string;
-    close: number;
-    ret_3m: number;
-    ret_6m: number;
-    ret_12m: number;
-    score: number;
-    abs_pass: boolean;
-    weight: number;
-}
-
-interface UniverseStock {
-    stk_cd: string;
-    stk_nm: string;
-    close: number;
-    score: number;
-    ret_12m: number;
-    passed: boolean;
-    reason: string;
-}
-
-interface ScreenerResult {
-    timestamp: string;
-    ref_date: string;
-    regime: string;
-    kospi: number | null;
-    kospi_sma200: number | null;
-    config: {
-        top_n: number;
-        weight_method: string;
-        min_trading_value: number;
-    };
-    summary: {
-        total_stocks: number;
-        universe_size: number;
-        abs_momentum_pass: number;
-        selected_count: number;
-        data_start: string;
-        data_end: string;
-        error?: string;
-    };
-    passed_stocks: ScreenedStock[];
-    all_universe: UniverseStock[];
-    elapsed_sec: number;
-}
+// ── Screener types: imported from '../types' ──
 
 // ═══════════════════════════════════════════════════
 //  Formatters
@@ -1271,85 +1225,7 @@ function BacktestTab() {
 //  Global Screener Tab (국내 ETF 근사 포트폴리오)
 // ═══════════════════════════════════════════════════
 
-interface GlobalScreenerKrEtf {
-    kr_code: string;
-    kr_name: string;
-    global_ticker: string;
-    category: string;
-    hedged: boolean;
-    weight_pct: number;
-    alloc_krw: number;
-    kr_price: number;
-    shares: number;
-    actual_alloc: number;
-    description: string;
-}
-
-interface GlobalEtfDetail {
-    global_ticker: string;
-    global_label: string;
-    global_price_usd: number;
-    regime: string;
-    weight_pct: number;
-    kr_code: string;
-    kr_name: string;
-    kr_category: string;
-    kr_hedged: boolean;
-    kr_description: string;
-    ret_3m?: number;
-    ret_6m?: number;
-    ret_12m?: number;
-    score?: number;
-    abs_pass?: boolean;
-}
-
-interface GlobalScreenerResult {
-    timestamp: string;
-    ref_date: string;
-    preset: {
-        key: string;
-        label: string;
-        icon: string;
-        risk_level: number;
-        desc: string;
-    };
-    config: {
-        weight_method: string;
-        initial_capital: number;
-        warmup_days: number;
-    };
-    usdkrw_rate: number;
-    regime_summary: {
-        n_bull: number;
-        n_bear: number;
-        total: number;
-        regimes: Record<string, string>;
-    };
-    strategic_weights: Record<string, string>;
-    category_actual: Record<string, number>;
-    global_etf_details: GlobalEtfDetail[];
-    kr_portfolio: GlobalScreenerKrEtf[];
-    benchmark_kr: Array<{
-        kr_code: string;
-        kr_name: string;
-        global_ticker: string;
-        weight_pct: number;
-        alloc_krw: number;
-        kr_price: number;
-        shares: number;
-    }>;
-    summary: {
-        total_etfs: number;
-        invested_etfs: number;
-        total_alloc_krw: number;
-        remaining_cash: number;
-        utilization_pct: number;
-        data_start: string;
-        data_end: string;
-        error?: string;
-    };
-    elapsed_sec: number;
-}
+// GlobalScreenerKrEtf, GlobalEtfDetail, GlobalScreenerResult: imported from '../types'
 
 const CATEGORY_COLOR: Record<string, string> = {
     '주식': 'bg-blue-100 text-blue-800',

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap, TrendingUp, Filter, Flame } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, Settings, Calculator, MessageSquare, Copy, CheckCircle2, ClipboardPaste, PieChart as PieChartIcon, Zap, TrendingUp, Filter, Flame, BarChart3 } from 'lucide-react';
 import { parseMiraeAssetCSV, parseMiraeAssetText } from './utils/csvParser';
 import type { SimulationResult, StockPosition } from './types';
 import axios from 'axios';
@@ -8,6 +8,7 @@ import PipelinePanel from './components/PipelinePanel';
 import BacktestPanel from './components/BacktestPanel';
 import ScreenerPanel from './components/ScreenerPanel';
 import MomentumPanel from './components/MomentumPanel';
+import PortfolioComparePanel from './components/PortfolioComparePanel';
 
 // 포트폴리오 유형별 색상
 const ASSET_COLORS: Record<string, string> = {
@@ -128,7 +129,7 @@ function App() {
   const [results, setResults] = useState<SimulationResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline' | 'backtest' | 'screener' | 'momentum'>('simulator');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'ai-prompt' | 'portfolio' | 'pipeline' | 'backtest' | 'screener' | 'momentum' | 'compare'>('simulator');
   const [promptCopied, setPromptCopied] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [stockMap, setStockMap] = useState<Record<string, string>>({});
@@ -449,6 +450,16 @@ ${excludedSummary}
             <Flame className="w-4 h-4" />
             모멘텀
           </button>
+          <button
+            className={`py-3 px-6 font-medium text-sm transition-colors border-b-2 flex items-center gap-2 ${activeTab === 'compare'
+              ? 'border-violet-600 text-violet-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            onClick={() => setActiveTab('compare')}
+          >
+            <BarChart3 className="w-4 h-4" />
+            비교분석
+          </button>
         </div>
 
         {/* Tab Content: Simulator */}
@@ -733,6 +744,25 @@ ${excludedSummary}
         {/* Tab Content: Momentum */}
         {activeTab === 'momentum' && (
           <MomentumPanel />
+        )}
+
+        {/* Tab Content: Compare */}
+        {activeTab === 'compare' && (
+          <PortfolioComparePanel
+            positions={results.map(r => ({
+              name: r.name,
+              quantity: r.quantity,
+              averagePrice: r.averagePrice,
+              currency: r.currency,
+              evalAmount: r.evalAmount,
+              assetType: r.assetType,
+              isSimTarget: r.isSimTarget,
+              ticker: r.ticker,
+            }))}
+            capital={capital}
+            usdToKrw={usdToKrw}
+            stockMap={stockMap}
+          />
         )}
 
       </div>
