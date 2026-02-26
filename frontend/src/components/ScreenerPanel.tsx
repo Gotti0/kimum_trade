@@ -716,12 +716,15 @@ export default function ScreenerPanel() {
                                 실행 로그가 여기에 표시됩니다.
                             </div>
                         ) : (
-                            status.logs.map((line, i) => (
-                                <div key={i} className="mb-0.5 hover:bg-white/5 px-2">
-                                    <span className="text-gray-600 inline-block w-6 select-none">{i + 1}</span>
-                                    {line}
-                                </div>
-                            ))
+                            status.logs.slice(-1000).map((line, i) => {
+                                const originalIndex = Math.max(0, status.logs.length - 1000) + i;
+                                return (
+                                    <div key={originalIndex} className="mb-0.5 hover:bg-white/5 px-2">
+                                        <span className="text-gray-600 inline-block w-6 select-none">{originalIndex + 1}</span>
+                                        {line}
+                                    </div>
+                                );
+                            })
                         )}
                     </div>
                 )}

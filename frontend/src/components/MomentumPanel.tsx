@@ -318,10 +318,10 @@ function AssetClassReferencePanel() {
     ];
 
     const colorMap: Record<string, { header: string; row: string; border: string }> = {
-        blue:    { header: 'bg-blue-50 text-blue-800', row: 'hover:bg-blue-50/40', border: 'border-blue-200' },
+        blue: { header: 'bg-blue-50 text-blue-800', row: 'hover:bg-blue-50/40', border: 'border-blue-200' },
         emerald: { header: 'bg-emerald-50 text-emerald-800', row: 'hover:bg-emerald-50/40', border: 'border-emerald-200' },
-        amber:   { header: 'bg-amber-50 text-amber-800', row: 'hover:bg-amber-50/40', border: 'border-amber-200' },
-        gray:    { header: 'bg-gray-100 text-gray-700', row: 'hover:bg-gray-50', border: 'border-gray-200' },
+        amber: { header: 'bg-amber-50 text-amber-800', row: 'hover:bg-amber-50/40', border: 'border-amber-200' },
+        gray: { header: 'bg-gray-100 text-gray-700', row: 'hover:bg-gray-50', border: 'border-gray-200' },
     };
 
     return (
@@ -475,12 +475,15 @@ function LogViewer({ status, label }: { status: PipelineStatus; label: string })
                             실행 로그가 여기에 표시됩니다.
                         </div>
                     ) : (
-                        status.logs.map((line, i) => (
-                            <div key={i} className="mb-0.5 border-l-2 border-transparent hover:border-amber-500/30 hover:bg-white/5 px-2 transition-all">
-                                <span className="text-gray-600 inline-block w-8 select-none">{i + 1}</span>
-                                {line}
-                            </div>
-                        ))
+                        status.logs.slice(-1000).map((line, i) => {
+                            const originalIndex = Math.max(0, status.logs.length - 1000) + i;
+                            return (
+                                <div key={originalIndex} className="mb-0.5 border-l-2 border-transparent hover:border-amber-500/30 hover:bg-white/5 px-2 transition-all">
+                                    <span className="text-gray-600 inline-block w-8 select-none">{originalIndex + 1}</span>
+                                    {line}
+                                </div>
+                            );
+                        })
                     )}
                 </div>
             )}
@@ -1886,13 +1889,12 @@ function GlobalBacktestTab() {
                                                 </span>
                                                 <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
                                                     <div
-                                                        className={`h-full rounded-full transition-all ${
-                                                            cat === 'equity' ? 'bg-blue-400'
-                                                            : cat === 'alternative' ? 'bg-amber-400'
-                                                            : cat === 'foreign_bond' ? 'bg-emerald-400'
-                                                            : cat === 'domestic_bond' ? 'bg-teal-400'
-                                                            : 'bg-gray-400'
-                                                        }`}
+                                                        className={`h-full rounded-full transition-all ${cat === 'equity' ? 'bg-blue-400'
+                                                                : cat === 'alternative' ? 'bg-amber-400'
+                                                                    : cat === 'foreign_bond' ? 'bg-emerald-400'
+                                                                        : cat === 'domestic_bond' ? 'bg-teal-400'
+                                                                            : 'bg-gray-400'
+                                                            }`}
                                                         style={{ width: `${w * 100}%` }}
                                                     />
                                                 </div>

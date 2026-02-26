@@ -85,7 +85,7 @@ export default function PipelinePanel() {
         <div className="space-y-6">
             {/* Bridge Server Monitor Banner */}
             <div className={`rounded-xl border-2 p-4 flex items-center justify-between transition-all ${bridgeConnected === null ? 'border-gray-200 bg-gray-50' :
-                    bridgeConnected ? 'border-emerald-200 bg-emerald-50' : 'border-orange-200 bg-orange-50'
+                bridgeConnected ? 'border-emerald-200 bg-emerald-50' : 'border-orange-200 bg-orange-50'
                 }`}>
                 <div className="flex items-center gap-3">
                     <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${bridgeConnected ? 'bg-emerald-100' : 'bg-orange-100'
@@ -99,7 +99,7 @@ export default function PipelinePanel() {
                         <h3 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
                             Daishin Bridge Server
                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${bridgeConnected === null ? 'bg-gray-200 text-gray-500' :
-                                    bridgeConnected ? 'bg-emerald-200 text-emerald-700' : 'bg-orange-200 text-orange-700'
+                                bridgeConnected ? 'bg-emerald-200 text-emerald-700' : 'bg-orange-200 text-orange-700'
                                 }`}>
                                 {bridgeConnected === null ? '확인 중...'
                                     : bridgeConnected
@@ -249,7 +249,10 @@ export default function PipelinePanel() {
                     >
                         {activePipeline.logs.length === 0
                             ? <span className="text-gray-600">로그 대기 중...</span>
-                            : activePipeline.logs.map((line, i) => <div key={i}>{line}</div>)
+                            : activePipeline.logs.slice(-1000).map((line, i) => {
+                                const originalIndex = Math.max(0, activePipeline.logs.length - 1000) + i;
+                                return <div key={originalIndex}>{line}</div>;
+                            })
                         }
                     </div>
                 </div>
