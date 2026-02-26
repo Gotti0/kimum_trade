@@ -370,6 +370,8 @@ export function analyzeGlobalGap(
     const matched: MatchedStock[] = [];
     const matchedPosNames = new Set<string>();
     const matchedGlobalTickers = new Set<string>();
+    /** 포지션명 → 자산군 카테고리 매핑 (카테고리 GAP 계산용) */
+    const matchedPosCategoryMap = new Map<string, string>();
 
     // ── 종목 매칭 ──
     for (const pos of positions) {
@@ -389,10 +391,11 @@ export function analyzeGlobalGap(
         const targetWeight = safeWeight(match.kr.weight_pct / 100); // weight_pct는 퍼센트
         const weightGap = actualWeight - targetWeight;
 
+        const category = match.kr.category || getGlobalCategory(match.kr.global_ticker);
         matched.push({
             ticker: match.kr.global_ticker,
             name: match.kr.kr_name,
-            sector: getGlobalCategory(match.kr.global_ticker),
+            sector: category,
             actualWeight,
             targetWeight,
             weightGap,
@@ -402,6 +405,7 @@ export function analyzeGlobalGap(
         });
 
         matchedPosNames.add(pos.name);
+        matchedPosCategoryMap.set(pos.name, category);
         matchedGlobalTickers.add(match.kr.global_ticker);
     }
 
@@ -437,9 +441,10 @@ export function analyzeGlobalGap(
 
     // ── 자산군 카테고리 배분 괴리 ──
     const categoryGaps = computeGlobalCategoryGaps(
-        matched,
+        positions,
+        matchedPosCategoryMap,
         krPortfolio,
-        globalDetails,
+        safeUsdKrw,
     );
 
     // 프리셋 라벨!
@@ -457,28 +462,74 @@ export function analyzeGlobalGap(
 
 /**
  * 글로벌 자산군(주식/채권/대체/현금) 카테고리별 실제비중 vs 타겟비중 괴리를 계산합니다.
+ *
+ * 기존 버그 수정:
+ *   - 실제(actual) 비중을 매칭된 종목에서만 계산하여 0%가 되던 문제 해결
+ *     → 모든 글로벌 관련 포지션(ETF/ETN/해외주식/USD)을 포함하도록 변경
+ *   - actual 분모가 totalCapital(전체)이라 target과 기준 불일치하던 문제 해결
+ *     → 글로벌 포지션 총평가/타겟 각각 100% 기준으로 정규화
  */
 function computeGlobalCategoryGaps(
-    matched: MatchedStock[],
+    positions: StockPosition[],
+    matchedPosCategoryMap: Map<string, string>,
     krPortfolio: GlobalScreenerKrEtf[],
-    _globalDetails: GlobalEtfDetail[],
+    usdToKrw: number,
 ): Record<string, CategoryGap> {
-    // 실제 카테고리 배분 (매칭된 종목의 actualWeight 합산)
-    const catActual: Record<string, number> = {};
-    for (const m of matched) {
-        const cat = m.sector ?? '미분류';
-        catActual[cat] = (catActual[cat] ?? 0) + m.actualWeight;
+    // ── 포지션 카테고리 매핑 구축 ──
+    // kr_portfolio 이름으로부터 카테고리를 매핑 (매칭 안 된 포지션의 fallback용)
+    const nameToCategoryFallback = new Map<string, string>();
+    for (const kr of krPortfolio) {
+        const cat = kr.category || getGlobalCategory(kr.global_ticker);
+        nameToCategoryFallback.set(kr.kr_name, cat);
     }
 
-    // 타겟 카테고리 배분 (kr_portfolio의 weight_pct 합산을 카테고리별로)
+    // ── 글로벌 관련 포지션 식별 ──
+    const globalPositions = positions.filter(
+        (p) =>
+            p.currency === 'USD' ||
+            p.assetType === 'ETF' ||
+            p.assetType === 'ETN' ||
+            p.assetType === '해외주식',
+    );
+
+    // ── 실제(actual) 카테고리 배분 ──
+    // 글로벌 관련 포지션의 평가금액을 카테고리별로 합산 후 정규화
+    const safeUsd = usdToKrw > 0 ? usdToKrw : 1300;
+    const totalGlobalEval = safeDivisor(
+        globalPositions.reduce((sum, p) => {
+            const evalKrw =
+                p.currency === 'USD'
+                    ? (p.evalAmount ?? 0) * safeUsd
+                    : (p.evalAmount ?? 0);
+            return sum + evalKrw;
+        }, 0),
+    );
+
+    const catActual: Record<string, number> = {};
+    for (const pos of globalPositions) {
+        const evalKrw =
+            pos.currency === 'USD'
+                ? (pos.evalAmount ?? 0) * safeUsd
+                : (pos.evalAmount ?? 0);
+
+        // 카테고리 결정: 매칭된 포지션 → kr_portfolio 이름 매칭 → 미분류
+        const cat =
+            matchedPosCategoryMap.get(pos.name) ??
+            nameToCategoryFallback.get(pos.name) ??
+            '미분류';
+        catActual[cat] = (catActual[cat] ?? 0) + evalKrw / totalGlobalEval;
+    }
+
+    // ── 타겟(target) 카테고리 배분 ──
+    // kr_portfolio의 weight_pct 합산 (이미 100% 기준)
     const catTarget: Record<string, number> = {};
     for (const kr of krPortfolio) {
         if (kr.weight_pct <= 0) continue;
-        const cat = getGlobalCategory(kr.global_ticker);
+        const cat = kr.category || getGlobalCategory(kr.global_ticker);
         catTarget[cat] = (catTarget[cat] ?? 0) + kr.weight_pct / 100;
     }
 
-    // 모든 카테고리 합집합
+    // ── 모든 카테고리 합집합 ──
     const allCats = new Set([
         ...Object.keys(catActual),
         ...Object.keys(catTarget),
