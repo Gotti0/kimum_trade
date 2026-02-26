@@ -11,7 +11,7 @@ if not os.path.exists(LOG_DIR):
 # Daishin API Configuration
 DAISHIN_BRIDGE_URL = "http://localhost:8000/api/dostk/chart"
 DAISHIN_CACHE_DIR = os.path.join(BASE_DIR, "cache_daishin")
-DAISHIN_MAX_MINUTE_COUNT = 180000
+DAISHIN_MAX_MINUTE_COUNT = 110000
 
 def get_logger(name, filename):
     logger = logging.getLogger(name)
