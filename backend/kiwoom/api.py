@@ -11,7 +11,15 @@ from datetime import datetime, timedelta
 # Mock 모드: 1이면 Mock 데이터, 0이면 키움 실제 API 호출
 MOCK_MODE = os.getenv("USE_MOCK_KIWOOM", "1") == "1"
 ACCESS_TOKEN = os.getenv("KIWOOM_ACCESS_TOKEN", "")
-KIWOOM_DOMAIN = os.getenv("KIWOOM_DOMAIN", "https://api.kiwoom.com")
+import os
+from dotenv import load_dotenv
+
+# dotenv 명시적 로드
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(_project_root, ".env"))
+
+is_mock = os.getenv("USE_MOCK_KIWOOM", "1") == "1"
+KIWOOM_DOMAIN = "https://mockapi.kiwoom.com" if is_mock else "https://api.kiwoom.com"
 
 # stock_mapper.py가 생성하는 캐시 파일 경로
 STOCK_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "stock_map.json")

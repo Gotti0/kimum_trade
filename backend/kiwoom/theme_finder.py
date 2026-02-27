@@ -32,7 +32,13 @@ class TopThemeFinder:
         appkey: str = None,
         secretkey: str = None,
     ):
-        self.domain = domain or os.getenv("KIWOOM_DOMAIN", "https://api.kiwoom.com")
+        if not domain:
+            from dotenv import load_dotenv
+            _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            load_dotenv(os.path.join(_project_root, ".env"))
+            is_mock = os.environ.get("USE_MOCK_KIWOOM", "1") == "1"
+            domain = "https://mockapi.kiwoom.com" if is_mock else "https://api.kiwoom.com"
+        self.domain = domain
         self.appkey = appkey or os.getenv("appkey", "")
         self.secretkey = secretkey or os.getenv("secretkey", "")
         self._token: str = ""

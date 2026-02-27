@@ -35,7 +35,13 @@ APP_KEY = os.getenv('appkey')
 SECRET_KEY = os.getenv('secretkey')
 
 # Constants
-BASE_URL = "https://api.kiwoom.com"  # Real trading server
+import os
+from dotenv import load_dotenv
+
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+load_dotenv(os.path.join(_project_root, ".env"))
+is_mock = os.getenv("USE_MOCK_KIWOOM", "1") == "1"
+BASE_URL = "https://mockapi.kiwoom.com" if is_mock else "https://api.kiwoom.com"  # Real/Mock Server
 CACHE_DIR = "cache"
 
 def get_access_token():

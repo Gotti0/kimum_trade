@@ -12,7 +12,18 @@ class KiwoomTradeAPI:
     키움 REST API 기반 주문 및 시세 조회 래퍼
     모의투자 도메인(mockapi.kiwoom.com) 전용으로 작성됨
     """
-    def __init__(self, is_mock: bool = True):
+    def __init__(self, is_mock: bool = None):
+        if is_mock is None:
+            _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            env_path = os.path.join(_project_root, ".env")
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(env_path)
+            except ImportError:
+                pass
+            # 1이면 모의투자, 0이면 실전투자 (기본값 1)
+            is_mock = os.environ.get("USE_MOCK_KIWOOM", "1") == "1"
+            
         self.domain = "https://mockapi.kiwoom.com" if is_mock else "https://api.kiwoom.com"
         # token은 theme_finder 등에서 사용하는 기존 token.json을 재사용
         self.token = self._get_token()
