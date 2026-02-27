@@ -22,7 +22,7 @@ from backend.kiwoom.strategy.pullback.pullback_backtester import PullbackBacktes
 logger = logging.getLogger(__name__)
 
 # 분봉 캐시 디렉토리
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 CACHE_DIR = os.path.join(_project_root, "cache", "minute_charts")
 DAILY_CACHE_DIR = os.path.join(_project_root, "cache", "daily_charts")
 os.makedirs(CACHE_DIR, exist_ok=True)

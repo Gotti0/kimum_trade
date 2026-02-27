@@ -17,7 +17,7 @@ import time
 from dotenv import load_dotenv
 
 # .env 파일 로드 (프로젝트 루트 기준)
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 load_dotenv(os.path.join(_project_root, ".env"))
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class TopThemeFinder:
     ):
         if not domain:
             from dotenv import load_dotenv
-            _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
             load_dotenv(os.path.join(_project_root, ".env"))
             is_mock = os.environ.get("USE_MOCK_KIWOOM", "1") == "1"
             domain = "https://mockapi.kiwoom.com" if is_mock else "https://api.kiwoom.com"

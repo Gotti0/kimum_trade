@@ -22,7 +22,7 @@ from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price, compute_
 
 logger = logging.getLogger(__name__)
 
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 CACHE_DIR = os.path.join(_project_root, "cache", "daily_charts")
 RESULT_DIR = os.path.join(_project_root, "cache", "screener")
 os.makedirs(CACHE_DIR, exist_ok=True)
