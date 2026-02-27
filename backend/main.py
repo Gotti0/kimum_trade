@@ -14,6 +14,7 @@ from backend.logic.calculator import calculate_stop_loss_and_atr
 from backend.pipeline_router import router as pipeline_router
 
 STOCK_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "stock_map.json")
+AUTO_TRADE_TARGETS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "auto_trade_targets.json")
 
 app = FastAPI(title="Loss Cut Simulator Backend API")
 app.include_router(pipeline_router)
@@ -81,6 +82,28 @@ async def update_stock_map(entry: StockMapEntry):
         json.dump(stock_map, f, indent=4, ensure_ascii=False)
 
     return {"status": "ok", "name": entry.name, "ticker": entry.ticker}
+
+class AutoTradeTarget(BaseModel):
+    stk_cd: str
+    stk_nm: str
+    buy_amount: float
+
+@app.get("/api/auto-trade/targets")
+async def get_auto_trade_targets():
+    """자동매매 타겟 종목 조회"""
+    if os.path.exists(AUTO_TRADE_TARGETS_FILE):
+        with open(AUTO_TRADE_TARGETS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return []
+
+@app.post("/api/auto-trade/targets")
+async def update_auto_trade_targets(targets: List[AutoTradeTarget]):
+    """자동매매 타겟 종목 저장"""
+    os.makedirs(os.path.dirname(AUTO_TRADE_TARGETS_FILE), exist_ok=True)
+    targets_dict = [t.model_dump() for t in targets]
+    with open(AUTO_TRADE_TARGETS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(targets_dict, f, indent=4, ensure_ascii=False)
+    return {"status": "ok", "count": len(targets_dict)}
 
 if __name__ == "__main__":
     import uvicorn

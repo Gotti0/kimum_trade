@@ -29,11 +29,8 @@ def convert_excel_to_md(input_file, output_file=None):
         # Read Excel file with correct header
         df = pd.read_excel(input_file, header=header_row_index)
         
-        # Select first 7 columns (index 0 to 6)
-        df_subset = df.iloc[:, :7]
-        
         # Convert to Markdown
-        markdown_table = df_subset.to_markdown(index=False)
+        markdown_table = df.to_markdown(index=False)
         
         if output_file:
             with open(output_file, 'w', encoding='utf-8') as f:

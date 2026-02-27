@@ -125,7 +125,7 @@ class KiwoomBacktestRequest(BaseModel):
     volume_top_n: int = 100   # [pullback] 거래량 상위 N 유니버스
     slippage_bps: float = 10.0    # [pullback] 매수·익절 슬리피지 (bp)
     stop_slippage_bps: float = 20.0  # [pullback] 손절 슬리피지 (bp)
-
+    target_file: str = "object_excel_daishin_filled.md"  # [legacy/phoenix] 매매 대상 마크다운 파일
 
 # ── Endpoints ──
 
@@ -138,6 +138,15 @@ async def list_excel_files():
     files.sort()
     return {"files": files}
 
+
+@router.get("/md-files")
+async def list_md_files():
+    """Return list of .md files in docs/ folder for Phoenix target selection."""
+    if not os.path.isdir(DOCS_DIR):
+        return {"files": []}
+    files = [f for f in os.listdir(DOCS_DIR) if f.lower().endswith(".md")]
+    files.sort()
+    return {"files": files}
 
 @router.get("/bridge-server/health")
 async def check_bridge_server():
@@ -217,6 +226,9 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
         "--slippage-bps", str(req.slippage_bps),
         "--stop-slippage-bps", str(req.stop_slippage_bps),
     ]
+    if strategy == "legacy" and req.target_file:
+        cmd.extend(["--target-file", req.target_file])
+        
     ok = pm.start("kiwoom-backtest", cmd)
     if not ok:
         return {"message": "Kiwoom Backtest is already running", "status": "running"}

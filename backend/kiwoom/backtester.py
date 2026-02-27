@@ -35,27 +35,69 @@ API_DELAY = 0.35
 FRICTION_COST = 0.00345
 
 
-class ThemeBacktester:
-    """테마 기반 백테스팅을 실행합니다."""
+class PhoenixBacktester:
+    """피닉스 매매 전략 기반 백테스팅을 실행합니다."""
 
-    def __init__(self, initial_capital: float = 10_000_000):
+    def __init__(self, initial_capital: float = 10_000_000, target_file: str = "object_excel_daishin_filled.md"):
         self.finder = TopThemeFinder()
-        self.sell_engine = SellStrategyEngine()
         self.initial_capital = initial_capital
-        self._trading_days_cache: list[str] = []  # YYYYMMDD 형식
-        self._universe_themes: list[dict] = []
-        self._universe_stocks: dict[str, list[dict]] = {} # {theme_cd: [stocks]}
-        self._daily_bars_cache: dict[str, list[dict]] = {} # {stk_cd: [bars]}
+        self._trading_days_cache: list[str] = []  # YYYYMMDD
+        self._daily_bars_cache: dict[str, list[dict]] = {}
+        
+        # 종목 메타 데이터 로드
+        self.target_file = target_file if target_file else "object_excel_daishin_filled.md"
+        self.target_stocks_history = self._load_target_stocks_history()
 
-    # ── 개장일 판별 ────────────────────────────────────────
+    def _load_target_stocks_history(self) -> dict:
+        """MD 파일에서 일자별 매매 대상 종목을 로드하여 매핑(dict) 반환"""
+        # docs/target_file 파싱
+        md_path = os.path.join(_project_root, "docs", self.target_file)
+        if not os.path.exists(md_path):
+            logger.warning("대상 종목 MD 파일이 존재하지 않습니다: %s", md_path)
+            return {}
+            
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            
+        history = {}
+        target_lines = [line for line in content.split('\n') if line.strip().startswith('|')]
+        if len(target_lines) > 2:
+            for line in target_lines[2:]:
+                cols = [c.strip() for c in line.split('|')[1:-1]]
+                if len(cols) >= 7:
+                    date_raw = cols[0] # 예: "25.3.4."
+                    stock_name = cols[1]
+                    market_type = cols[4]
+                    is_ats = cols[5]
+                    stock_code = cols[6]
+                    
+                    if stock_code.lower() == 'nan' or not stock_code:
+                        continue
+                    
+                    try:
+                        # Convert date_raw "25.3.4." -> "20250304"
+                        parts = date_raw.strip('.').split('.')
+                        if len(parts) == 3:
+                            y, m, d = parts
+                            yyyymmdd = f"20{y.zfill(2)}{m.zfill(2)}{d.zfill(2)}"
+                            if yyyymmdd not in history:
+                                history[yyyymmdd] = []
+                            history[yyyymmdd].append({
+                                "stk_cd": stock_code.replace("A", ""),
+                                "stk_nm": stock_name,
+                                "market_type": market_type,
+                                "is_ats": is_ats == 'Y'
+                            })
+                    except Exception as e:
+                        logger.warning(f"날짜 파싱 오류: {date_raw} - {e}")
+        return history
+
+    # ── 개장일/캐시 (공통 로직 유지) ───────────────────────────
 
     def _load_trading_days(self):
-        """일봉 데이터로 실제 개장일 목록을 구축합니다.
-        코스피 대표종목(삼성전자 005930)의 최근 일봉을 조회하여 날짜 추출.
-        """
+        """일봉 데이터로 실제 개장일 목록을 구축합니다."""
         if self._trading_days_cache:
             return
-
         logger.info("개장일 목록 구축 중 (삼성전자 일봉 조회)...")
         token = self.finder._get_token()
         url = f"{self.finder.domain}/api/dostk/chart"
@@ -69,359 +111,260 @@ class ThemeBacktester:
             "base_dt": datetime.now().strftime("%Y%m%d"),
             "upd_stkpc_tp": "1",
         }
-
         all_dates = []
-        cont_yn = ""
-        next_key = ""
-
-        for _ in range(5):  # 최대 5회 연속조회 (~100일)
+        cont_yn, next_key = "", ""
+        for _ in range(5):
             if cont_yn == "Y":
                 headers["cont-yn"] = "Y"
                 headers["next-key"] = next_key
-
-            resp = __import__('requests').post(
-                url, headers=headers, json=payload,
-                verify=__import__('certifi').where(), timeout=10
-            )
+            resp = __import__('requests').post(url, headers=headers, json=payload, verify=__import__('certifi').where(), timeout=10)
             resp.raise_for_status()
             data = resp.json()
-
             chart = data.get("stk_dt_pole_chart_qry", [])
             for item in chart:
                 dt = item.get("dt", "")
                 if dt and len(dt) == 8:
                     all_dates.append(dt)
-
             if len(all_dates) >= 120:
                 break
-
             cont_yn = resp.headers.get("cont-yn", "N")
             next_key = resp.headers.get("next-key", "")
             if cont_yn != "Y":
                 break
-
             time.sleep(API_DELAY)
-
-        # 날짜 오름차순 정렬
         self._trading_days_cache = sorted(set(all_dates))
-        logger.info("개장일 %d일 로드 완료 (%s ~ %s)",
-                     len(self._trading_days_cache),
-                     self._trading_days_cache[0] if self._trading_days_cache else "?",
-                     self._trading_days_cache[-1] if self._trading_days_cache else "?")
-
-    def _is_trading_day(self, dt_str: str) -> bool:
-        """YYYYMMDD가 개장일인지 확인."""
-        return dt_str in self._trading_days_cache
+        logger.info("개장일 %d일 로드 완료", len(self._trading_days_cache))
 
     def _get_trading_day_n_ago(self, n: int) -> str:
         """현재 기준 n 영업일 전 날짜 반환."""
-        if not self._trading_days_cache:
-            return ""
+        if not self._trading_days_cache: return ""
         idx = len(self._trading_days_cache) - n
-        if idx < 0:
-            return ""
-        return self._trading_days_cache[idx]
-
-    def _next_trading_day(self, dt_str: str) -> str:
-        """dt_str 다음 영업일 반환."""
-        try:
-            idx = self._trading_days_cache.index(dt_str)
-            if idx + 1 < len(self._trading_days_cache):
-                return self._trading_days_cache[idx + 1]
-        except ValueError:
-            pass
-        return ""
-
-    # ── 분봉 캐시 ──────────────────────────────────────────
+        return self._trading_days_cache[idx] if idx >= 0 else ""
 
     def _get_minute_chart_cached(self, stk_cd: str, base_dt: str) -> list[dict]:
         """분봉 데이터를 캐시에서 가져오거나, 없으면 API 호출 후 캐싱."""
         cache_file = os.path.join(CACHE_DIR, f"{stk_cd}_{base_dt}.json")
-
         if os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as f:
                 return json.load(f)
-
         logger.info("분봉 캐시 미스: %s/%s → API 호출", stk_cd, base_dt)
         time.sleep(API_DELAY)
         bars = self.finder.get_minute_chart(stk_cd, base_dt)
-
-        # 캐시 저장
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(bars, f, ensure_ascii=False)
-
         return bars
 
     def _get_daily_chart_cached(self, stk_cd: str) -> list[dict]:
-        """일봉 데이터를 캐시에서 가져오거나, 없으면 API 호출 후 캐싱."""
+        """일봉 데이터를 부분 캐시에서 불러오거나 API 요청"""
         if stk_cd in self._daily_bars_cache:
             return self._daily_bars_cache[stk_cd]
-
+            
         cache_file = os.path.join(DAILY_CACHE_DIR, f"{stk_cd}.json")
         if os.path.exists(cache_file):
             with open(cache_file, "r", encoding="utf-8") as f:
                 bars = json.load(f)
                 self._daily_bars_cache[stk_cd] = bars
                 return bars
-
+                
         logger.info("일봉 캐시 미스: %s → API 호출", stk_cd)
         time.sleep(API_DELAY)
         bars = self.finder.get_daily_chart(stk_cd, datetime.now().strftime("%Y%m%d"))
-
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(bars, f, ensure_ascii=False)
-
+            
         self._daily_bars_cache[stk_cd] = bars
         return bars
 
-    # ── 유니버스 구축 및 과거 순위 계산 ────────────────────
-
-    def _build_history_universe(self):
-        """현재 기준 상위 테마/종목 유니버스를 구축하고 일봉 데이터를 미리 수집합니다."""
-        logger.info("백테스트 유니버스 구축 중 (상위 100개 테마)...")
-        self._universe_themes = self.finder.get_top_themes(days_ago=1, top_n=100)
-
-        for theme in self._universe_themes:
-            cd = theme.get("thema_grp_cd")
-            if not cd: continue
-            time.sleep(API_DELAY)
-            stocks = self.finder.get_theme_stocks(cd, days_ago=1)
-            self._universe_stocks[cd] = stocks
-
-            # 각 종목 일봉 캐싱
-            for stk in stocks:
-                stk_cd = stk.get("stk_cd")
-                if stk_cd:
-                    self._get_daily_chart_cached(stk_cd)
-
-    def _get_historical_top_theme(self, target_date: str) -> dict:
-        """특정 날짜(target_date) 기준의 1등 테마와 대장주를 일봉 데이터로 계산합니다."""
-        results = []
-
-        for theme in self._universe_themes:
-            theme_cd = theme.get("thema_grp_cd")
-            theme_nm = theme.get("thema_nm")
-            stocks = self._universe_stocks.get(theme_cd, [])
-
-            stock_returns = []
-            for stk in stocks:
-                stk_cd = stk.get("stk_cd")
-                stk_nm = stk.get("stk_nm")
-                bars = self._get_daily_chart_cached(stk_cd)
-
-                # target_date의 성과 찾기
-                # target_date 당일 등락률을 계산 (target_date 종가 vs 전일 종가)
-                # 미래 참조 방지를 위해 target_date 이전 데이터만 사용
-                target_idx = -1
-                for i, bar in enumerate(bars):
-                    if bar.get("dt") == target_date:
-                        target_idx = i
-                        break
-
-                if target_idx > 0:
-                    prev_close = _parse_price(bars[target_idx-1].get("cur_prc", "0"))
-                    curr_close = _parse_price(bars[target_idx].get("cur_prc", "0"))
-                    if prev_close > 0:
-                        ret = (curr_close - prev_close) / prev_close * 100
-                        stock_returns.append({
-                            "stk_cd": stk_cd,
-                            "stk_nm": stk_nm,
-                            "ret": ret
-                        })
-
-            if stock_returns:
-                # 테마 내 평균 수익률 계산
-                avg_ret = sum(s["ret"] for s in stock_returns) / len(stock_returns)
-                # 대장주 선정 (수익률 1위)
-                stock_returns.sort(key=lambda x: x["ret"], reverse=True)
-                results.append({
-                    "theme": theme,
-                    "avg_ret": avg_ret,
-                    "top_stock": stock_returns[0]
-                })
-
-        if not results:
-            return {}
-
-        # 1등 테마 선정
-        results.sort(key=lambda x: x["avg_ret"], reverse=True)
-        top = results[0]
-
-        return {
-            "theme": top["theme"],
-            "stocks": [top["top_stock"]]  # 대장주 1개만 반환
-        }
+    def _get_daily_bars_up_to(self, stk_cd: str, target_date: str) -> list[dict]:
+        """target_date 이전(포함)의 일봉만 반환"""
+        bars = self._get_daily_chart_cached(stk_cd)
+        result = []
+        for bar in bars: 
+            if bar.get("dt") <= target_date:
+                result.append(bar)
+                
+        # theme_finder에서 오름차순 정렬해서 넘겨주므로 그대로 반환 ([-1]이 최신)
+        return result
 
     # ── 메인 백테스팅 루프 ─────────────────────────────────
 
     def run(self, start_days_ago: int = 99) -> dict:
-        """백테스팅을 실행합니다.
-
-        Args:
-            start_days_ago: 시작일 (N 영업일 전, 최대 99)
-
-        Returns:
-            {
-                'initial_capital': float,
-                'final_capital': float,
-                'total_return': float,  # 누적 수익률 (%)
-                'trades': [{day, date, theme, stocks, buy_price, sell_price, return_rate, ...}],
-                'summary': str,
-            }
-        """
+        """백테스팅을 실행합니다."""
         self._load_trading_days()
-
-        cumulative_return = 1.0  # 복리 누적
+        
+        cumulative_return = 1.0
         trades = []
-
+        
         logger.info("=" * 70)
-        logger.info("  백테스팅 시작: %d 영업일 전 → 현재", start_days_ago)
+        logger.info("  백테스팅 시작: [PhoenixBacktester] %d 영업일 전 → 현재", start_days_ago)
         logger.info("  초기 자본금: %s원", f"{self.initial_capital:,.0f}")
         logger.info("=" * 70)
 
-        # 헤더 출력
         header = (
-            f"{'Day':>4} | {'BuyDate':<10} | {'SellDate':<10} | "
-            f"{'Theme':<20} | {'Stock':<10} | "
-            f"{'BuyPrc':>10} | {'SellPrc':>10} | {'Return':>8} | {'Cumul':>8}"
+            f"{'Day':>4} | {'TradingDt':<10} | {'RecordDt':<10} | "
+            f"{'TargetStocks':<12} | {'Return':>8} | {'Cumul':>8}"
         )
         logger.info(header)
         logger.info("-" * len(header))
 
-        for day_offset in range(start_days_ago, 1, -1):
-            buy_date = self._get_trading_day_n_ago(day_offset)
-            if not buy_date:
-                logger.info("Day -%d: 매수일 특정 불가, 건너뜀", day_offset)
+        for day_offset in range(start_days_ago, 0, -1):
+            trading_date = self._get_trading_day_n_ago(day_offset)
+            record_date = self._get_trading_day_n_ago(day_offset + 1) # 전일(기록일)
+            
+            if not trading_date or not record_date:
                 continue
-
-            # 1단계: 과거 시점(buy_date) 기준 1등 테마 및 대장주 계산 (미래 참조 차단)
-            try:
-                if not self._universe_themes:
-                    self._build_history_universe()
+            
+            # 기록일 기준 추출된 타겟 종목 로드
+            target_stocks = self.target_stocks_history.get(record_date, [])
+            
+            if not target_stocks:
+                continue
                 
-                theme_result = self._get_historical_top_theme(buy_date)
-            except Exception as e:
-                logger.warning("Day -%d: 테마 계산 실패 (%s), 건너뜀", day_offset, e)
-                continue
-
-            theme = theme_result.get("theme", {})
-            stocks = theme_result.get("stocks", [])
-
-            if not theme or not stocks:
-                logger.info("Day -%d: 테마/종목 없음, 건너뜀", day_offset)
-                continue
-
-            theme_name = theme.get("thema_nm", "?")
-
-            # 2단계: 매수일/매도일 특정
-            sell_date = self._next_trading_day(buy_date)
-            if not sell_date:
-                logger.info("Day -%d: 매도일 특정 불가, 건너뜀", day_offset)
-                continue
-
-            # 3단계: 1위 종목 선정 결과 로그
-            stk_top = stocks[0]
-            logger.info("Day -%d: 테마 [%s] 내 대장주 [%s] 선정 (과거시점 수익률: %.2f%%)",
-                         day_offset, theme_name, stk_top.get("stk_nm"), stk_top.get("ret", 0))
-
-            # 4단계: 각 종목 처리 (현재 대장주 1개)
             day_returns = []
-            for stk in stocks:
-                stk_cd = stk.get("stk_cd", "")
-                stk_nm = stk.get("stk_nm", "?")
-
-                if not stk_cd:
-                    continue
-
+            
+            for stk in target_stocks:
+                stk_cd = stk["stk_cd"]
+                stk_nm = stk["stk_nm"]
+                
                 try:
-                    # 매수일 분봉 → 15:20 종가 = 매수가
-                    buy_bars = self._get_minute_chart_cached(stk_cd, buy_date)
-                    buy_bar = None
-                    for bar in reversed(buy_bars):
+                    daily_bars = self._get_daily_bars_up_to(stk_cd, trading_date)
+                    if len(daily_bars) < 2:
+                        continue
+                    
+                    # 오름차순 정렬되어 있으므로 [-1]은 당일(또는 제일 최신), [-2]는 전일 종가
+                    yesterday_close = _parse_price(daily_bars[-2].get("cur_prc", "0"))
+                    
+                    today_minute_bars = self._get_minute_chart_cached(stk_cd, trading_date)
+                    if not today_minute_bars:
+                        continue
+                        
+                    # 분봉은 최근 데이터가 앞쪽인지 뒤쪽인지 역순 적용
+                    # 도스탁 API 분봉은 내림차순(최신이 앞) 혹은 오름차순일 수 있습니다
+                    # 시초가를 얻기 위해 뒤집어서 09시 찾거나 가장 처음 바 기준
+                    sorted_minutes = sorted(today_minute_bars, key=lambda x: x.get("cntr_tm", ""))
+                    
+                    open_bar = sorted_minutes[0]
+                    open_price = _parse_price(open_bar.get("open_pric", "0"))
+                    
+                    if yesterday_close == 0 or open_price == 0:
+                        continue
+                        
+                    # 매수
+                    buy_price = open_price # 백테스트 환경상 시초가 시장가 매입 간주
+                    
+                    # 9시 14분 가격 조회
+                    price_914 = open_price
+                    for bar in sorted_minutes:
                         cntr_tm = bar.get("cntr_tm", "")
-                        if len(cntr_tm) >= 12:
-                            hhmm = cntr_tm[8:12]
-                            if hhmm <= "1520":
-                                buy_bar = bar
-                                break
-
-                    if not buy_bar:
-                        # 15:20 분봉이 없으면 마지막 분봉 사용
-                        buy_bar = buy_bars[-1] if buy_bars else None
-
-                    if not buy_bar:
-                        logger.info("Day -%d [%s]: 매수일 분봉 없음, 건너뜀", day_offset, stk_nm)
-                        continue
-
-                    buy_price = _parse_price(buy_bar.get("cur_prc", "0"))
-                    if buy_price <= 0:
-                        continue
-
-                    # 상한가 조회 (ka10007)
-                    time.sleep(API_DELAY)
-                    stock_info = self.finder.get_stock_info(stk_cd)
-                    upper_limit_price = _parse_price(stock_info.get("upl_pric", "0"))
-
-                    # 매도일 분봉
-                    sell_bars = self._get_minute_chart_cached(stk_cd, sell_date)
-
-                    # 매도 전략 실행
-                    result = self.sell_engine.execute(sell_bars, buy_price, upper_limit_price)
-
-                    # 마찰 비용 적용 (왕복 0.345%)
-                    sell_price_after_friction = result["sell_price"] * (1 - FRICTION_COST / 2)
+                        if len(cntr_tm) >= 12 and cntr_tm[8:12] == "0914":
+                            price_914 = _parse_price(bar.get("cur_prc", "0"))
+                            break
+                            
+                    profit_rate_914 = (price_914 - buy_price) / buy_price
+                    
+                    # 시간대 매도 공식
+                    if profit_rate_914 <= -0.09:
+                        sell_start, sell_end = "0924", "0927"
+                    elif -0.09 < profit_rate_914 <= -0.04:
+                        sell_start, sell_end = "0921", "0922"
+                    elif -0.04 < profit_rate_914 < 0.00:
+                        sell_start, sell_end = "0919", "0920"
+                    elif 0.00 <= profit_rate_914 <= 0.04:
+                        sell_start, sell_end = "0924", "0927"
+                    elif 0.04 < profit_rate_914 <= 0.09:
+                        sell_start, sell_end = "0920", "0924"
+                    else: 
+                        sell_start, sell_end = "0917", "0919"
+                        
+                    sell_price = 0
+                    sell_time = ""
+                    upper_limit = yesterday_close * 1.30
+                    is_hit_upper = False
+                    trailing_stop_price = 0
+                    sell_reason = ""
+                    
+                    for bar in sorted_minutes:
+                        cntr_tm = bar.get("cntr_tm", "")
+                        if len(cntr_tm) < 12: continue
+                        hhmm = cntr_tm[8:12]
+                        cur_prc = _parse_price(bar.get("cur_prc", "0"))
+                        
+                        # 상한가 도달 체크 (15분 이내)
+                        if hhmm <= "0915" and cur_prc >= upper_limit * 0.99:
+                            is_hit_upper = True
+                            trailing_stop_price = cur_prc * 0.92
+                            
+                        # 상한가 트레일링 스톱 이탈
+                        if is_hit_upper and cur_prc <= trailing_stop_price:
+                            sell_price = cur_prc
+                            sell_time = hhmm
+                            sell_reason = "상한가 Trailing Stop"
+                            break
+                            
+                        # 시간대 분할 매도 적용 (상한가 미도달 시)
+                        if sell_start <= hhmm <= sell_end and not is_hit_upper:
+                            sell_price = cur_prc
+                            sell_time = hhmm
+                            sell_reason = "시간대 목표 달성"
+                            break
+                            
+                    if sell_price == 0:
+                        last_bar = sorted_minutes[-1]
+                        sell_price = _parse_price(last_bar.get("cur_prc", "0"))
+                        sell_time = last_bar.get("cntr_tm", "")[8:12] if len(last_bar.get("cntr_tm", ""))>=12 else "1530"
+                        sell_reason = "종가 강제 청산"
+                        
+                    # 수익 계산
+                    sell_price_after_friction = sell_price * (1 - FRICTION_COST / 2)
                     buy_price_with_friction = buy_price * (1 + FRICTION_COST / 2)
                     
-                    if buy_price_with_friction > 0:
-                        ret_after_friction = (sell_price_after_friction - buy_price_with_friction) / buy_price_with_friction
-                    else:
-                        ret_after_friction = 0.0
-
+                    ret_after_friction = (sell_price_after_friction - buy_price_with_friction) / buy_price_with_friction
                     day_returns.append(ret_after_friction)
-
-                    trade_record = {
+                    
+                    trades.append({
                         "day_offset": day_offset,
-                        "buy_date": buy_date,
-                        "sell_date": sell_date,
-                        "theme": theme_name,
+                        "trading_date": trading_date,
+                        "record_date": record_date,
                         "stk_cd": stk_cd,
                         "stk_nm": stk_nm,
                         "buy_price": buy_price,
-                        "sell_price": result["sell_price"],
-                        "sell_price_after_friction": sell_price_after_friction,
+                        "sell_price": sell_price,
+                        "sell_time": sell_time,
+                        "profit_rate_914": profit_rate_914,
                         "return_rate": ret_after_friction * 100,
-                        "original_return_rate": result["return_rate"],
-                        "sell_reason": result["sell_reason"],
-                        "hit_upper_limit": result["hit_upper_limit"],
-                    }
-                    trades.append(trade_record)
-
+                        "sell_reason": sell_reason
+                    })
+                    
                 except Exception as e:
                     logger.warning("Day -%d [%s]: 처리 실패 (%s)", day_offset, stk_nm, e)
                     continue
 
-            # 해당 일의 평균 수익률로 누적 수익률 갱신
+            # 일 수익률 반영 (종목별 1/N 등분할 투자 가정)
             if day_returns:
                 avg_daily_return = sum(day_returns) / len(day_returns)
                 cumulative_return *= (1 + avg_daily_return)
                 cumul_pct = (cumulative_return - 1) * 100
-
+                
+                rep_stock = target_stocks[0]["stk_nm"] if target_stocks else "-"
+                if len(target_stocks) > 1:
+                    rep_stock += f" 외 {len(target_stocks)-1}건"
+                    
                 logger.info(
-                    f"{day_offset:>4} | {buy_date:<10} | {sell_date:<10} | "
-                    f"{theme_name[:20]:<20} | {len(day_returns):>2} stocks | "
+                    f"{day_offset:>4} | {trading_date:<10} | {record_date:<10} | "
+                    f"{rep_stock[:12]:<12} | "
                     f"{avg_daily_return*100:>+7.2f}% | {cumul_pct:>+7.2f}%"
                 )
-
+                
         # ── 최종 결과 ──────────────────────────────────────
         final_capital = self.initial_capital * cumulative_return
         total_return = (cumulative_return - 1) * 100
 
         summary = (
             f"\n{'='*70}\n"
-            f"  백테스팅 완료 [ThemeBacktester]\n"
+            f"  백테스팅 완료 [PhoenixBacktester]\n"
             f"  기간: {start_days_ago}영업일전 → 현재\n"
             f"  마찰 비용: 왕복 {FRICTION_COST*100:.3f}%\n"
-            f"  총 거래 횟수: {len(trades)}건\n"
+            f"  총 거래 종목 연인원: {len(trades)}건\n"
             f"  초기 자본금: {self.initial_capital:>15,.0f}원\n"
             f"  최종 자본금: {final_capital:>15,.0f}원\n"
             f"  누적 수익률: {total_return:>+.2f}%\n"
@@ -953,6 +896,13 @@ if __name__ == "__main__":
         help="데이터 모드: daily(일봉 전용, 장기 가능), minute(분봉 기반, ~60일)"
     )
     parser.add_argument(
+        "--target-file",
+        type=str,
+        default="object_excel_daishin_filled.md",
+        dest="target_file",
+        help="[legacy/phoenix] 매매 대상 마크다운 파일 (기본값: object_excel_daishin_filled.md)"
+    )
+    parser.add_argument(
         "--volume-top-n",
         type=int,
         default=100,
@@ -1051,8 +1001,11 @@ if __name__ == "__main__":
         print(result["summary"])
         print(f"\n  데이터 모드: {args.mode}")
     else:
-        backtester = ThemeBacktester(initial_capital=args.capital)
+        backtester = PhoenixBacktester(
+            initial_capital=args.capital,
+            target_file=args.target_file,
+        )
         result = backtester.run(start_days_ago=args.days)
         print(result["summary"])
-        print(f"\n  데이터 모드: {args.mode}")
+        print(f"\n  데이터 모드: {args.mode}, 타겟 파일: {args.target_file}")
 

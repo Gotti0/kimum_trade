@@ -4,7 +4,7 @@ import axios from 'axios';
 
 const API = 'http://localhost:8001/api/pipeline';
 
-type Strategy = 'legacy' | 'swing' | 'pullback';
+type Strategy = 'phoenix' | 'swing' | 'pullback';
 
 interface PipelineStatus {
     name: string;
@@ -15,9 +15,9 @@ interface PipelineStatus {
 }
 
 const STRATEGY_CONFIG = {
-    legacy: {
-        label: '1일 오버나잇',
-        desc: '장마감 매수 → 익일 매도 (기존 전략)',
+    phoenix: {
+        label: '피닉스 전략',
+        desc: '선택한 타겟 종목(MD) 시초가 진입 및 시간대별·상한가 청산',
         color: 'blue',
         icon: TrendingUp,
         pipelineName: 'kiwoom-backtest',
@@ -39,9 +39,13 @@ const STRATEGY_CONFIG = {
 } as const;
 
 export default function BacktestPanel() {
-    const [strategy, setStrategy] = useState<Strategy>('legacy');
+    const [strategy, setStrategy] = useState<Strategy>('phoenix');
     const [mode, setMode] = useState<'daily' | 'minute'>('daily');
     const [status, setStatus] = useState<PipelineStatus>({ name: 'kiwoom-backtest', status: 'idle', logs: [] });
+
+    // 타겟 파일 선택 로직 추가
+    const [mdFiles, setMdFiles] = useState<string[]>([]);
+    const [selectedMdFile, setSelectedMdFile] = useState<string>('object_excel_daishin_filled.md');
     const [days, setDays] = useState(10);
     const [capital, setCapital] = useState(10000000);
     const [volumeTopN, setVolumeTopN] = useState(100);
@@ -51,7 +55,7 @@ export default function BacktestPanel() {
 
     const cfg = STRATEGY_CONFIG[strategy];
 
-    // Status polling
+    // Status polling 및 MD 파일 로드
     useEffect(() => {
         const fetchStatus = () => {
             axios.get(`${API}/status/${cfg.pipelineName}`)
@@ -60,6 +64,19 @@ export default function BacktestPanel() {
         };
         fetchStatus();
         const id = setInterval(fetchStatus, 3000);
+
+        // 마크다운 파일 목록 불러오기 (최초 1회 + 전략 변경 시 확인)
+        axios.get(`${API}/md-files`)
+            .then(r => {
+                if (r.data && r.data.files) {
+                    setMdFiles(r.data.files);
+                    if (!r.data.files.includes(selectedMdFile) && r.data.files.length > 0) {
+                        setSelectedMdFile(r.data.files[0]);
+                    }
+                }
+            })
+            .catch(() => { });
+
         return () => clearInterval(id);
     }, [strategy]);
 
@@ -70,9 +87,13 @@ export default function BacktestPanel() {
 
     const startBacktest = () => {
         const payload: Record<string, unknown> = {
-            days, capital, strategy,
+            days, capital,
+            strategy: strategy === 'phoenix' ? 'legacy' : strategy, // 백엔드 라우터에서는 'legacy'로 받음
             mode: (strategy === 'swing' || strategy === 'pullback') ? mode : 'daily',
         };
+        if (strategy === 'phoenix' && selectedMdFile) {
+            payload.target_file = selectedMdFile;
+        }
         if (strategy === 'pullback') {
             payload.volume_top_n = volumeTopN;
             payload.slippage_bps = slippageBps;
@@ -178,6 +199,34 @@ export default function BacktestPanel() {
                     </div>
                 </div>
 
+                {/* Phoenix Strategy File Selector */}
+                {strategy === 'phoenix' && (
+                    <div className="mb-6 rounded-xl border p-4 bg-blue-50/50 border-blue-100">
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="text-sm font-bold text-blue-800 flex items-center gap-2">
+                                <TrendingUp className="w-4 h-4 text-blue-500" />
+                                매매 대상 종목 파일 (.md)
+                            </label>
+                        </div>
+                        <select
+                            value={selectedMdFile}
+                            onChange={(e) => setSelectedMdFile(e.target.value)}
+                            disabled={isRunning || mdFiles.length === 0}
+                            className={`w-full border border-blue-200 rounded-lg px-4 py-3 bg-white text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all disabled:opacity-50`}
+                        >
+                            {mdFiles.length === 0 ? (
+                                <option value="">MD 파일 로딩 중이거나 없습니다...</option>
+                            ) : (
+                                mdFiles.map(file => (
+                                    <option key={file} value={file}>{file}</option>
+                                ))
+                            )}
+                        </select>
+                        <p className="mt-2 text-xs text-blue-600 font-medium">
+                            선택한 파일의 "날자" 컬럼을 기록일로 인식하여 다음 영업일 매매에 사용합니다.
+                        </p>
+                    </div>
+                )}
                 {/* Swing Strategy Info Card */}
                 {(strategy === 'swing' || strategy === 'pullback') && (
                     <div className={`mb-6 rounded-xl border p-4 ${strategy === 'pullback' ? 'bg-emerald-50/50 border-emerald-100' : 'bg-violet-50/50 border-violet-100'}`}>
