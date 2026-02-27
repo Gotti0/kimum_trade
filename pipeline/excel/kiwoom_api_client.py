@@ -13,7 +13,7 @@ KIWOOM_CACHE_DIR = os.path.join(os.getcwd(), "cache_kiwoom")
 logger = get_logger("kiwoom_api_client", "kiwoom_api_client.log")
 
 def _get_token() -> str:
-    token_path = os.path.join(os.getcwd(), "backend", "kiwoom", "token.json")
+    token_path = os.path.join(os.getcwd(), "token.json")
     try:
         with open(token_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -56,12 +56,13 @@ def fetch_kiwoom_minute_data(stk_cd: str, required_date_int: int = None, is_nxt:
         except:
             cache_data = None
             
-    # Check if cache satisfies
     if cache_data and len(cache_data) > 0:
-        first_item = cache_data[0]    # Oldest
-        last_item = cache_data[-1]    # Newest
-        first_cached_date = int(first_item['date'])
-        last_cached_date = int(last_item['date'])
+        dates = [int(item['date']) for item in cache_data if 'date' in item]
+        if not dates:
+            cache_data = None
+        else:
+            first_cached_date = min(dates)   # 진짜 Oldest
+            last_cached_date = max(dates)    # 진짜 Newest
         
         needed_oldest = required_date_int if required_date_int else first_cached_date
         
@@ -105,14 +106,19 @@ def fetch_kiwoom_minute_data(stk_cd: str, required_date_int: int = None, is_nxt:
     needed_newest = min((base_date_int if base_date_int else today_int), today_int)
     needed_oldest = required_date_int if required_date_int else today_int
 
+    is_backfilling = False
     if cache_data and len(cache_data) > 0:
-        first_cached_date = int(cache_data[0]['date'])
-        last_cached_date = int(cache_data[-1]['date'])
+        dates = [int(item['date']) for item in cache_data if 'date' in item]
+        first_cached_date = min(dates)
+        last_cached_date = max(dates)
+        
         if last_cached_date >= needed_newest:
             initial_base_dt = first_cached_date
+            is_backfilling = True
             logger.info(f"Cache covers newest part. Back-filling from {initial_base_dt} down to {needed_oldest}")
         else:
             initial_base_dt = needed_newest
+            is_backfilling = False
             logger.info(f"Cache missing newest part. Requesting from {initial_base_dt}")
     else:
         first_cached_date = 99999999
@@ -200,7 +206,8 @@ def fetch_kiwoom_minute_data(stk_cd: str, required_date_int: int = None, is_nxt:
                 logger.info(f"Reached date boundary {required_date_int}. Stopping fetch.")
                 break
                 
-            if cache_data and initial_base_dt > last_cached_date:
+            # [주의] Forward-filling(최신 데이터를 앞쪽으로 붙일 때)만 아래 조기종료 작동
+            if cache_data and not is_backfilling and initial_base_dt > last_cached_date:
                 if chart_list:
                     page_oldest_dt_str = chart_list[-1].get("cntr_tm", "")
                     if len(page_oldest_dt_str) >= 8:

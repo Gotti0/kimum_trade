@@ -211,7 +211,7 @@ async def stop_pipeline(req: StopRequest):
 @router.post("/kiwoom-backtest")
 async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     """Run Kiwoom Theme Backtester."""
-    script = os.path.join(PROJECT_ROOT, "backend", "kiwoom", "backtester.py")
+    script = os.path.join(PROJECT_ROOT, "backend", "kiwoom", "strategy", "phoenix", "backtester.py")
     if not os.path.isfile(script):
         raise HTTPException(status_code=404, detail="backtester.py not found")
     

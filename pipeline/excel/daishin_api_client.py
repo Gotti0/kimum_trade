@@ -11,10 +11,11 @@ logger = get_logger("daishin_api_client", "daishin_api_client.log")
 
 def fetch_daishin_data(stk_cd, required_date_int=None):
     """Fetch raw JSON chart data from the Daishin 32-bit bridge server or local cache."""
+    clean_cd = stk_cd.replace("A", "")
     if not os.path.exists(DAISHIN_CACHE_DIR):
         os.makedirs(DAISHIN_CACHE_DIR)
         
-    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{stk_cd}_raw.json")
+    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{clean_cd}_raw.json")
     cache_data = None
     
     if os.path.exists(cache_file):
@@ -111,10 +112,11 @@ def fetch_daishin_data(stk_cd, required_date_int=None):
 
 def fetch_daishin_info(stk_cd):
     """Fetch company metadata (Market Cap, Sector, ATS, Market) from the Daishin 32-bit bridge server or local cache."""
+    clean_cd = stk_cd.replace("A", "")
     if not os.path.exists(DAISHIN_CACHE_DIR):
         os.makedirs(DAISHIN_CACHE_DIR)
         
-    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{stk_cd}_info.json")
+    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{clean_cd}_info.json")
     cache_data = None
     
     if os.path.exists(cache_file):
@@ -190,7 +192,8 @@ def fetch_daishin_info_batch(tickers: list):
                 
                 # Save each entry to its own cache file for future individual calls
                 for stk_cd, new_data in batch_data.items():
-                    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{stk_cd}_info.json")
+                    clean_cd = stk_cd.replace("A", "")
+                    cache_file = os.path.join(DAISHIN_CACHE_DIR, f"{clean_cd}_info.json")
                     try:
                         with open(cache_file, 'w', encoding='utf-8') as f:
                             json.dump(new_data, f)

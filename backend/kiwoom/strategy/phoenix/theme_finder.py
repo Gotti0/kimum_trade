@@ -77,30 +77,29 @@ class TopThemeFinder:
     # ── 토큰 발급 ──────────────────────────────────────────
 
     def _get_token(self) -> str:
-        """au10001 API로 접근토큰을 발급받습니다. 이미 발급된 토큰이 있으면 재사용."""
+        """Reads the token from central auth module or token.json file."""
         if self._token:
             return self._token
-
-        url = f"{self.domain}/oauth2/token"
-        headers = {
-            "api-id": "au10001",
-            "Content-Type": "application/json;charset=UTF-8",
-        }
-        payload = {
-            "grant_type": "client_credentials",
-            "appkey": self.appkey,
-            "secretkey": self.secretkey,
-        }
-
-        resp = self._request_with_retry(url, headers, payload)
-        data = resp.json()
-
-        if data.get("return_code") != 0:
-            raise RuntimeError(f"토큰 발급 실패: {data.get('return_msg')}")
-
-        self._token = data["token"]
-        logger.info("접근토큰 발급 성공 (만료: %s)", data.get("expires_dt", "?"))
-        return self._token
+            
+        try:
+            from backend.kiwoom.auth import get_token
+            # Attempt to use central module
+            token = get_token()
+            if not token:
+                raise RuntimeError("Token is empty")
+            self._token = token
+            return token
+            
+        except ImportError:
+            # Fallback
+            token_path = os.path.join(_project_root, "token.json")
+            if not os.path.exists(token_path):
+                raise RuntimeError(f"No token found at {token_path}. Please generate one first.")
+            
+            with open(token_path, "r", encoding="utf-8") as f:
+                data = __import__('json').load(f)
+                self._token = data.get("access_token", "")
+                return self._token
 
     # ── ka90001: 테마그룹별요청 ────────────────────────────
 

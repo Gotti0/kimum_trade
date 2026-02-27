@@ -19,6 +19,9 @@ from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
 from backend.kiwoom.strategy.phoenix.sell_strategy import SellStrategyEngine, _parse_price
 from backend.kiwoom.strategy.pullback.pullback_backtester import PullbackBacktester
 
+from pipeline.excel.kiwoom_api_client import fetch_kiwoom_minute_data
+from pipeline.excel.daishin_api_client import fetch_daishin_data
+
 logger = logging.getLogger(__name__)
 
 # 분봉 캐시 디렉토리
@@ -71,9 +74,13 @@ class PhoenixBacktester:
                     is_ats = cols[5]
                     stock_code = cols[6]
                     
-                    if stock_code.lower() == 'nan' or not stock_code:
+                    if stock_code.lower() == 'nan' or not stock_code.strip():
+                        if len(cols) > 7:
+                            stock_code = cols[7]
+
+                    if stock_code.lower() == 'nan' or not stock_code.strip():
                         continue
-                    
+                        
                     try:
                         # Convert date_raw "25.3.4." -> "20250304"
                         parts = date_raw.strip('.').split('.')
@@ -141,18 +148,22 @@ class PhoenixBacktester:
         idx = len(self._trading_days_cache) - n
         return self._trading_days_cache[idx] if idx >= 0 else ""
 
-    def _get_minute_chart_cached(self, stk_cd: str, base_dt: str) -> list[dict]:
-        """분봉 데이터를 캐시에서 가져오거나, 없으면 API 호출 후 캐싱."""
-        cache_file = os.path.join(CACHE_DIR, f"{stk_cd}_{base_dt}.json")
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        logger.info("분봉 캐시 미스: %s/%s → API 호출", stk_cd, base_dt)
-        time.sleep(API_DELAY)
-        bars = self.finder.get_minute_chart(stk_cd, base_dt)
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(bars, f, ensure_ascii=False)
-        return bars
+    def _get_minute_chart_cached(self, stk_cd: str, base_dt: str, is_ats: bool = False) -> list[dict]:
+        """pipeline/excel 하위의 통일된 분봉 데이터 로직 및 캐시를 사용합니다."""
+        base_int = int(base_dt) if base_dt else None
+        
+        # Kiwoom / Daishin API 모듈 호출 시 이미 각자 내부 캐싱 로직이 구현되어 있음
+        if is_ats:
+            bars = fetch_kiwoom_minute_data(stk_cd, required_date_int=base_int, is_nxt=True, base_date_int=base_int)
+        else:
+            bars = fetch_daishin_data(stk_cd, required_date_int=base_int)
+            
+        if not bars:
+            return []
+            
+        # 해당일(base_dt)에 해당하는 분봉만 필터링하여 반환
+        day_bars = [b for b in bars if str(b.get("date", "")) == base_dt]
+        return day_bars
 
     def _get_daily_chart_cached(self, stk_cd: str) -> list[dict]:
         """일봉 데이터를 부분 캐시에서 불러오거나 API 요청"""
@@ -234,17 +245,17 @@ class PhoenixBacktester:
                     # 오름차순 정렬되어 있으므로 [-1]은 당일(또는 제일 최신), [-2]는 전일 종가
                     yesterday_close = _parse_price(daily_bars[-2].get("cur_prc", "0"))
                     
-                    today_minute_bars = self._get_minute_chart_cached(stk_cd, trading_date)
+                    is_ats = stk.get("is_ats", False)
+                    today_minute_bars = self._get_minute_chart_cached(stk_cd, trading_date, is_ats=is_ats)
                     if not today_minute_bars:
                         continue
                         
-                    # 분봉은 최근 데이터가 앞쪽인지 뒤쪽인지 역순 적용
-                    # 도스탁 API 분봉은 내림차순(최신이 앞) 혹은 오름차순일 수 있습니다
-                    # 시초가를 얻기 위해 뒤집어서 09시 찾거나 가장 처음 바 기준
-                    sorted_minutes = sorted(today_minute_bars, key=lambda x: x.get("cntr_tm", ""))
+                    # Excel Pipeline 모듈이 통합 포맷 반환 (date, time, open, high, low, close, volume)
+                    # time은 900, 915 등 정수 형태
+                    sorted_minutes = sorted(today_minute_bars, key=lambda x: int(x.get("time", 0)))
                     
                     open_bar = sorted_minutes[0]
-                    open_price = _parse_price(open_bar.get("open_pric", "0"))
+                    open_price = float(open_bar.get("open", 0))
                     
                     if yesterday_close == 0 or open_price == 0:
                         continue
@@ -255,26 +266,26 @@ class PhoenixBacktester:
                     # 9시 14분 가격 조회
                     price_914 = open_price
                     for bar in sorted_minutes:
-                        cntr_tm = bar.get("cntr_tm", "")
-                        if len(cntr_tm) >= 12 and cntr_tm[8:12] == "0914":
-                            price_914 = _parse_price(bar.get("cur_prc", "0"))
+                        t_int = int(bar.get("time", 0))
+                        if t_int == 914:
+                            price_914 = float(bar.get("close", 0))
                             break
                             
                     profit_rate_914 = (price_914 - buy_price) / buy_price
                     
                     # 시간대 매도 공식
                     if profit_rate_914 <= -0.09:
-                        sell_start, sell_end = "0924", "0927"
+                        sell_start, sell_end = 924, 927
                     elif -0.09 < profit_rate_914 <= -0.04:
-                        sell_start, sell_end = "0921", "0922"
+                        sell_start, sell_end = 921, 922
                     elif -0.04 < profit_rate_914 < 0.00:
-                        sell_start, sell_end = "0919", "0920"
+                        sell_start, sell_end = 919, 920
                     elif 0.00 <= profit_rate_914 <= 0.04:
-                        sell_start, sell_end = "0924", "0927"
+                        sell_start, sell_end = 924, 927
                     elif 0.04 < profit_rate_914 <= 0.09:
-                        sell_start, sell_end = "0920", "0924"
+                        sell_start, sell_end = 920, 924
                     else: 
-                        sell_start, sell_end = "0917", "0919"
+                        sell_start, sell_end = 917, 919
                         
                     sell_price = 0
                     sell_time = ""
@@ -284,34 +295,32 @@ class PhoenixBacktester:
                     sell_reason = ""
                     
                     for bar in sorted_minutes:
-                        cntr_tm = bar.get("cntr_tm", "")
-                        if len(cntr_tm) < 12: continue
-                        hhmm = cntr_tm[8:12]
-                        cur_prc = _parse_price(bar.get("cur_prc", "0"))
+                        hhmm = int(bar.get("time", 0))
+                        cur_prc = float(bar.get("close", 0))
                         
                         # 상한가 도달 체크 (15분 이내)
-                        if hhmm <= "0915" and cur_prc >= upper_limit * 0.99:
+                        if hhmm <= 915 and cur_prc >= upper_limit * 0.99:
                             is_hit_upper = True
                             trailing_stop_price = cur_prc * 0.92
                             
                         # 상한가 트레일링 스톱 이탈
                         if is_hit_upper and cur_prc <= trailing_stop_price:
                             sell_price = cur_prc
-                            sell_time = hhmm
+                            sell_time = f"{hhmm:04d}"
                             sell_reason = "상한가 Trailing Stop"
                             break
                             
                         # 시간대 분할 매도 적용 (상한가 미도달 시)
                         if sell_start <= hhmm <= sell_end and not is_hit_upper:
                             sell_price = cur_prc
-                            sell_time = hhmm
+                            sell_time = f"{hhmm:04d}"
                             sell_reason = "시간대 목표 달성"
                             break
                             
                     if sell_price == 0:
                         last_bar = sorted_minutes[-1]
-                        sell_price = _parse_price(last_bar.get("cur_prc", "0"))
-                        sell_time = last_bar.get("cntr_tm", "")[8:12] if len(last_bar.get("cntr_tm", ""))>=12 else "1530"
+                        sell_price = float(last_bar.get("close", 0))
+                        sell_time = f"{int(last_bar.get('time', 0)):04d}"
                         sell_reason = "종가 강제 청산"
                         
                     # 수익 계산
