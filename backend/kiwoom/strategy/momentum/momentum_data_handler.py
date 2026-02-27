@@ -21,8 +21,8 @@ from typing import Tuple, Optional
 import pandas as pd
 import numpy as np
 
-from backend.kiwoom.theme_finder import TopThemeFinder
-from backend.kiwoom.sell_strategy import _parse_price
+from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +390,7 @@ class MomentumDataHandler:
         Returns:
             로드된 글로벌 ETF 수.
         """
-        from backend.kiwoom.global_data_fetcher import GlobalDataFetcher
+        from backend.kiwoom.strategy.global_etf.global_data_fetcher import GlobalDataFetcher
 
         fetcher = GlobalDataFetcher()
         data = fetcher.fetch_all(force_refresh=force_refresh)

@@ -14,10 +14,10 @@ global_screener.py: 글로벌 멀티에셋 스크리너 — 국내 상장 ETF �
   7. 결과 JSON 저장 (cache/screener/global_screener_latest.json)
 
 Usage:
-    python -m backend.kiwoom.global_screener
-    python -m backend.kiwoom.global_screener --preset growth
-    python -m backend.kiwoom.global_screener --preset stable
-    python -m backend.kiwoom.global_screener --capital 100000000
+    python -m backend.kiwoom.strategy.global_etf.global_screener
+    python -m backend.kiwoom.strategy.global_etf.global_screener --preset growth
+    python -m backend.kiwoom.strategy.global_etf.global_screener --preset stable
+    python -m backend.kiwoom.strategy.global_etf.global_screener --capital 100000000
 """
 
 import argparse
@@ -32,10 +32,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-from backend.kiwoom.momentum_scorer import MomentumScorer
-from backend.kiwoom.momentum_rebalancer import MomentumRebalancer
-from backend.kiwoom.momentum_asset_classes import (
+from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
+from backend.kiwoom.strategy.momentum.momentum_rebalancer import MomentumRebalancer
+from backend.kiwoom.strategy.momentum.momentum_asset_classes import (
     ASSET_CLASSES,
     CATEGORY_TO_TICKERS,
     CASH_TICKER,
@@ -285,7 +285,7 @@ def run_global_screener(
         return _empty_result("데이터 부족")
 
     # 환율 조회
-    from backend.kiwoom.global_data_fetcher import GlobalDataFetcher
+    from backend.kiwoom.strategy.global_etf.global_data_fetcher import GlobalDataFetcher
     fetcher = GlobalDataFetcher()
     usdkrw_rate = fetcher.fetch_usdkrw_rate()
     logger.info("  USD/KRW 환율: %s", f"{usdkrw_rate:,.2f}")
@@ -583,10 +583,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 사용 예시:
-  python -m backend.kiwoom.global_screener
-  python -m backend.kiwoom.global_screener --preset growth
-  python -m backend.kiwoom.global_screener --preset stable --capital 200000000
-  python -m backend.kiwoom.global_screener --preset balanced --weight equal_weight
+  python -m backend.kiwoom.strategy.global_etf.global_screener
+  python -m backend.kiwoom.strategy.global_etf.global_screener --preset growth
+  python -m backend.kiwoom.strategy.global_etf.global_screener --preset stable --capital 200000000
+  python -m backend.kiwoom.strategy.global_etf.global_screener --preset balanced --weight equal_weight
 
 프리셋 목록:
   growth           🚀 성장형         (risk 5) — 주식 55%%, 대체 25%%

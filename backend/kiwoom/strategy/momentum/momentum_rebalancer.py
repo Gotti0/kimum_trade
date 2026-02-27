@@ -497,7 +497,7 @@ class MomentumRebalancer:
             - target_weights: {티커/종목코드: 최종비중} (글로벌 + 국내 통합)
             - regime_by_ticker: {티커: "BULL"/"BEAR"}
         """
-        from backend.kiwoom.momentum_asset_classes import CASH_TICKER
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import CASH_TICKER
 
         # 1. 자산군별 독립 국면 판별
         regime_by_ticker = self.detect_global_regimes(global_prices, global_sma200)
@@ -587,8 +587,8 @@ if __name__ == "__main__":
         handlers=[logging.StreamHandler()],
     )
 
-    from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-    from backend.kiwoom.momentum_scorer import MomentumScorer
+    from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+    from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
 
     global_only = "--global" in sys.argv
 
@@ -639,7 +639,7 @@ if __name__ == "__main__":
         handler.load_global_data()
         handler.build_global_dataframes()
 
-        from backend.kiwoom.momentum_asset_classes import get_preset
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import get_preset
 
         g_last = handler._global_trading_days[-1]
         g_prices, g_sma = handler.get_global_data_up_to(g_last)

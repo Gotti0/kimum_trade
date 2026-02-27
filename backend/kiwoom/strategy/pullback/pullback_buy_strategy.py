@@ -13,7 +13,7 @@ PullbackBuyEngine: 스윙-풀백 전략의 매수 시뮬레이터.
 import logging
 from typing import Optional
 
-from backend.kiwoom.sell_strategy import _parse_price
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price
 
 logger = logging.getLogger(__name__)
 

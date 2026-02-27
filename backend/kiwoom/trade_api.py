@@ -118,9 +118,38 @@ class KiwoomTradeAPI:
             chart = data.get("stk_dt_pole_chart_qry", [])
             if not chart:
                 return 0.0
-            # 당일(혹은 가장 최신) 데이터
             latest = chart[0] 
             return float(latest.get("cur_prc", "0"))
         except Exception as e:
             logger.error(f"Get Price Failed: {stk_cd}, Error: {e}")
+            return 0.0
+
+    def get_previous_close(self, stk_cd: str) -> float:
+        """
+        전일 종가 조회
+        차트 조회 API(ka10081)를 사용하여 전일(어제 장 마감) 종가를 반환합니다.
+        """
+        url = f"{self.domain}/api/dostk/chart"
+        headers = self._get_headers("ka10081")
+        payload = {
+            "stk_cd": stk_cd,
+            # 오늘 포함 과거 일일 차트 요청
+            "base_dt": datetime.now().strftime("%Y%m%d"),
+            "upd_stkpc_tp": "1"
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, verify=certifi.where(), timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            chart = data.get("stk_dt_pole_chart_qry", [])
+            
+            if len(chart) >= 2:
+                # 장 중 당일 데이터가 index 0에 위치하므로, index 1이 전일 종가
+                # (장 마감이어도 최근 마지막 조회일자가 0이므로 동일 적용)
+                return float(chart[1].get("cur_prc", "0"))
+            elif len(chart) == 1:
+                return float(chart[0].get("cur_prc", "0"))
+            return 0.0
+        except Exception as e:
+            logger.error(f"Get Previous Close Failed: {stk_cd}, Error: {e}")
             return 0.0

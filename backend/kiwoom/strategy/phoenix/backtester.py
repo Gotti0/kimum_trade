@@ -15,9 +15,9 @@ import sys
 import logging
 from datetime import datetime, timedelta
 
-from backend.kiwoom.theme_finder import TopThemeFinder
-from backend.kiwoom.sell_strategy import SellStrategyEngine, _parse_price
-from backend.kiwoom.pullback_backtester import PullbackBacktester
+from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
+from backend.kiwoom.strategy.phoenix.sell_strategy import SellStrategyEngine, _parse_price
+from backend.kiwoom.strategy.pullback.pullback_backtester import PullbackBacktester
 
 logger = logging.getLogger(__name__)
 
@@ -386,12 +386,12 @@ class PhoenixBacktester:
 #  SwingBacktester: 3~5일 스윙 전략 백테스터
 # ══════════════════════════════════════════════════════════════
 
-from backend.kiwoom.alpha_filter import AlphaFilter, compute_all_indicators
-from backend.kiwoom.buy_strategy import BuyStrategyEngine
-from backend.kiwoom.sell_strategy import SwingSellStrategyEngine, compute_atr
-from backend.kiwoom.risk_manager import RegimeFilter, PositionSizer
+from backend.kiwoom.strategy.phoenix.alpha_filter import AlphaFilter, compute_all_indicators
+from backend.kiwoom.strategy.phoenix.buy_strategy import BuyStrategyEngine
+from backend.kiwoom.strategy.phoenix.sell_strategy import SwingSellStrategyEngine, compute_atr
+from backend.kiwoom.strategy.phoenix.risk_manager import RegimeFilter, PositionSizer
 
-from backend.kiwoom.risk_manager import RegimeFilter, PositionSizer
+from backend.kiwoom.strategy.phoenix.risk_manager import RegimeFilter, PositionSizer
 
 
 class SwingBacktester:
@@ -968,7 +968,7 @@ if __name__ == "__main__":
     )
 
     if args.strategy == "momentum":
-        from backend.kiwoom.momentum_backtester import MomentumBacktester
+        from backend.kiwoom.strategy.momentum.momentum_backtester import MomentumBacktester
         backtester = MomentumBacktester(
             initial_capital=args.capital,
             top_n=args.top_n,

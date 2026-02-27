@@ -15,6 +15,8 @@ from backend.pipeline_router import router as pipeline_router
 
 STOCK_MAP_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "stock_map.json")
 AUTO_TRADE_TARGETS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "auto_trade_targets.json")
+HISTORY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "auto_trade_history.json")
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "auto_trade_config.json")
 
 app = FastAPI(title="Loss Cut Simulator Backend API")
 app.include_router(pipeline_router)
@@ -104,6 +106,49 @@ async def update_auto_trade_targets(targets: List[AutoTradeTarget]):
     with open(AUTO_TRADE_TARGETS_FILE, 'w', encoding='utf-8') as f:
         json.dump(targets_dict, f, indent=4, ensure_ascii=False)
     return {"status": "ok", "count": len(targets_dict)}
+
+@app.get("/api/auto-trade/history")
+async def get_auto_trade_history():
+    """자동매매 체결 내역 및 누적수익률 조회 데이터"""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+class AutoTradeConfig(BaseModel):
+    buy_time: str
+    evaluate_time: str
+    force_close_time: str
+    trailing_drop_rate: float
+
+@app.get("/api/auto-trade/config")
+async def get_auto_trade_config():
+    """자동매매 환경설정 조회"""
+    default_config = {
+        "buy_time": "0900",
+        "evaluate_time": "0914",
+        "force_close_time": "1520",
+        "trailing_drop_rate": 0.08
+    }
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            try:
+                loaded = json.load(f)
+                return {**default_config, **loaded}
+            except json.JSONDecodeError:
+                pass
+    return default_config
+
+@app.post("/api/auto-trade/config")
+async def update_auto_trade_config(config: AutoTradeConfig):
+    """자동매매 환경설정 갱신 (프론트에서 저장/동기화 요청)"""
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config.model_dump(), f, indent=4, ensure_ascii=False)
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

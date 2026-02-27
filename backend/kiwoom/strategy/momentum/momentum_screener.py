@@ -11,9 +11,9 @@ momentum_screener.py: 듀얼 모멘텀 스크리너 독립 실행 스크립트.
   4. 결과 JSON 저장 (cache/screener/momentum_latest.json)
 
 Usage:
-    python -m backend.kiwoom.momentum_screener
-    python -m backend.kiwoom.momentum_screener --top-n 30
-    python -m backend.kiwoom.momentum_screener --weight equal_weight
+    python -m backend.kiwoom.strategy.momentum.momentum_screener
+    python -m backend.kiwoom.strategy.momentum.momentum_screener --top-n 30
+    python -m backend.kiwoom.strategy.momentum.momentum_screener --weight equal_weight
 """
 
 import argparse
@@ -28,9 +28,9 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-from backend.kiwoom.momentum_scorer import MomentumScorer
-from backend.kiwoom.momentum_rebalancer import MomentumRebalancer
+from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
+from backend.kiwoom.strategy.momentum.momentum_rebalancer import MomentumRebalancer
 
 logger = logging.getLogger(__name__)
 
@@ -289,9 +289,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 사용 예시:
-  python -m backend.kiwoom.momentum_screener
-  python -m backend.kiwoom.momentum_screener --top-n 30
-  python -m backend.kiwoom.momentum_screener --weight equal_weight
+  python -m backend.kiwoom.strategy.momentum.momentum_screener
+  python -m backend.kiwoom.strategy.momentum.momentum_screener --top-n 30
+  python -m backend.kiwoom.strategy.momentum.momentum_screener --weight equal_weight
         """,
     )
 

@@ -1,6 +1,6 @@
 
 import unittest
-from backend.kiwoom.sell_strategy import SellStrategyEngine
+from backend.kiwoom.strategy.phoenix.sell_strategy import SellStrategyEngine
 
 class TestSellStrategy(unittest.TestCase):
     def setUp(self):

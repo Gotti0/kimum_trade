@@ -12,7 +12,7 @@ Reference:
 import logging
 from typing import Optional
 
-from backend.kiwoom.sell_strategy import _parse_price
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price
 
 logger = logging.getLogger(__name__)
 

@@ -418,10 +418,10 @@ if __name__ == "__main__":
         handlers=[logging.StreamHandler()],
     )
 
-    from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-    from backend.kiwoom.momentum_scorer import MomentumScorer
-    from backend.kiwoom.momentum_rebalancer import MomentumRebalancer
-    from backend.kiwoom.momentum_portfolio import MomentumPortfolioManager
+    from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+    from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
+    from backend.kiwoom.strategy.momentum.momentum_rebalancer import MomentumRebalancer
+    from backend.kiwoom.strategy.momentum.momentum_portfolio import MomentumPortfolioManager
 
     # ── 1. 데이터 로드 ──
     handler = MomentumDataHandler(finder=None)

@@ -19,13 +19,13 @@ import time
 import logging
 from datetime import datetime
 
-from backend.kiwoom.theme_finder import TopThemeFinder
-from backend.kiwoom.risk_manager import RegimeFilter, PositionSizer
-from backend.kiwoom.sell_strategy import _parse_price, compute_atr
+from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
+from backend.kiwoom.strategy.phoenix.risk_manager import RegimeFilter, PositionSizer
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price, compute_atr
 
-from backend.kiwoom.pullback_alpha_filter import PullbackAlphaFilter
-from backend.kiwoom.pullback_buy_strategy import PullbackBuyEngine
-from backend.kiwoom.pullback_sell_strategy import PullbackSellEngine
+from backend.kiwoom.strategy.pullback.pullback_alpha_filter import PullbackAlphaFilter
+from backend.kiwoom.strategy.pullback.pullback_buy_strategy import PullbackBuyEngine
+from backend.kiwoom.strategy.pullback.pullback_sell_strategy import PullbackSellEngine
 
 logger = logging.getLogger(__name__)
 

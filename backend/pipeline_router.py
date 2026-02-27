@@ -219,7 +219,7 @@ async def run_kiwoom_backtest(req: KiwoomBacktestRequest):
     strategy = req.strategy if req.strategy in ("legacy", "swing", "pullback") else "legacy"
     mode = req.mode if req.mode in ("daily", "minute") else "daily"
     cmd = [
-        VPANDA_PYTHON, "-m", "backend.kiwoom.backtester",
+        VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.phoenix.backtester",
         str(req.days), "--capital", str(req.capital),
         "--strategy", strategy, "--mode", mode,
         "--volume-top-n", str(req.volume_top_n),
@@ -248,7 +248,7 @@ async def run_momentum_backtest(req: MomentumBacktestRequest):
     """Run Mid-to-Long Term Dual Momentum Backtester."""
     weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
     cmd = [
-        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_backtester",
+        VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.momentum.momentum_backtester",
         "--capital", str(req.capital),
         "--top-n", str(req.top_n),
         "--weight", weight,
@@ -293,7 +293,7 @@ async def run_global_momentum_backtest(req: GlobalMomentumBacktestRequest):
         "growth", "growth_seeking", "balanced", "stability_seeking", "stable"
     ) else "balanced"
     cmd = [
-        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_backtester",
+        VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.momentum.momentum_backtester",
         "--global",
         "--preset", preset,
         "--capital", str(req.capital),
@@ -333,7 +333,7 @@ async def run_momentum_screener(req: MomentumScreenerRequest):
     """Run Dual Momentum Screener."""
     weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
     cmd = [
-        VPANDA_PYTHON, "-m", "backend.kiwoom.momentum_screener",
+        VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.momentum.momentum_screener",
         "--top-n", str(req.top_n),
         "--weight", weight,
         "--min-tv", str(req.min_trading_value),
@@ -372,7 +372,7 @@ async def run_global_screener(req: GlobalScreenerRequest):
     ) else "balanced"
     weight = req.weight_method if req.weight_method in ("inverse_volatility", "equal_weight") else "inverse_volatility"
     cmd = [
-        VPANDA_PYTHON, "-m", "backend.kiwoom.global_screener",
+        VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.global_etf.global_screener",
         "--preset", preset,
         "--weight", weight,
         "--capital", str(req.capital),
@@ -406,7 +406,7 @@ class ScreenerRequest(BaseModel):
 async def run_screener(req: ScreenerRequest):
     """Run Alpha Filter Screener."""
     strategy = req.strategy if req.strategy in ("swing", "pullback") else "swing"
-    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.alpha_screener", "--top_n", str(req.top_n), "--strategy", strategy]
+    cmd = [VPANDA_PYTHON, "-m", "backend.kiwoom.strategy.phoenix.alpha_screener", "--top_n", str(req.top_n), "--strategy", strategy]
     ok = pm.start("alpha-screener", cmd)
     if not ok:
         return {"message": "Screener is already running", "status": "running"}

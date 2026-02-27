@@ -509,10 +509,10 @@ if __name__ == "__main__":
         # ══════════════════════════════════════════════
         #  글로벌 멀티마켓 비용 테스트
         # ══════════════════════════════════════════════
-        from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-        from backend.kiwoom.momentum_scorer import MomentumScorer
-        from backend.kiwoom.momentum_rebalancer import MomentumRebalancer
-        from backend.kiwoom.momentum_asset_classes import get_preset
+        from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+        from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
+        from backend.kiwoom.strategy.momentum.momentum_rebalancer import MomentumRebalancer
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import get_preset
 
         print(f"\n{'='*70}")
         print("  PortfolioManager 멀티마켓 비용 테스트 (글로벌 + 국내)")
@@ -531,7 +531,7 @@ if __name__ == "__main__":
         print(f"\n  글로벌 ETF {n_global}개 로드, 마지막 날짜: {latest_date.date()}")
 
         # 2. 환율 조회
-        from backend.kiwoom.global_data_fetcher import GlobalDataFetcher
+        from backend.kiwoom.strategy.global_etf.global_data_fetcher import GlobalDataFetcher
         fetcher = GlobalDataFetcher()
         usdkrw = fetcher.fetch_usdkrw_rate()
         print(f"  USD/KRW 환율: {usdkrw:,.2f}")
@@ -606,8 +606,8 @@ if __name__ == "__main__":
         # ══════════════════════════════════════════════
         #  기존 국내 전용 테스트
         # ══════════════════════════════════════════════
-        from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-        from backend.kiwoom.momentum_scorer import MomentumScorer
+        from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+        from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
 
         # 1. 데이터 로드
         handler = MomentumDataHandler(finder=None)

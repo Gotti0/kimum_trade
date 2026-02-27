@@ -5,7 +5,7 @@ alpha_screener.py: 알파 필터 스크리너 독립 실행 스크립트.
 통과 종목을 JSON 파일로 저장합니다.
 
 Usage:
-    python -m backend.kiwoom.alpha_screener [--top_n 30]
+    python -m backend.kiwoom.strategy.phoenix.alpha_screener [--top_n 30]
 """
 
 import os
@@ -15,10 +15,10 @@ import time
 import logging
 from datetime import datetime
 
-from backend.kiwoom.theme_finder import TopThemeFinder
-from backend.kiwoom.alpha_filter import AlphaFilter, compute_all_indicators
-from backend.kiwoom.pullback_alpha_filter import PullbackAlphaFilter, compute_pullback_indicators
-from backend.kiwoom.sell_strategy import _parse_price, compute_atr
+from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
+from backend.kiwoom.strategy.phoenix.alpha_filter import AlphaFilter, compute_all_indicators
+from backend.kiwoom.strategy.pullback.pullback_alpha_filter import PullbackAlphaFilter, compute_pullback_indicators
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price, compute_atr
 
 logger = logging.getLogger(__name__)
 

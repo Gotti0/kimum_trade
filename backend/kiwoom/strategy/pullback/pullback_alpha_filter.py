@@ -14,7 +14,7 @@ PullbackAlphaFilter: 스윙-풀백 전략을 위한 2단계 눌림목 필터링 
 import logging
 from typing import Optional
 
-from backend.kiwoom.alpha_filter import compute_adtv, compute_rvol, compute_ema, estimate_market_cap
+from backend.kiwoom.strategy.phoenix.alpha_filter import compute_adtv, compute_rvol, compute_ema, estimate_market_cap
 
 logger = logging.getLogger(__name__)
 

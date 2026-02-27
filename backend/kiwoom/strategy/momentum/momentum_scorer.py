@@ -347,7 +347,7 @@ class MomentumScorer:
             - asset_weights: {티커: 비중} 예) {"SPY": 0.18, "SHY": 0.15, ...}
             - kr_top_n_codes: 국내 개별종목 Top-N 코드 리스트
         """
-        from backend.kiwoom.momentum_asset_classes import (
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import (
             CATEGORY_TO_TICKERS,
             CASH_TICKER,
             get_preset,
@@ -470,7 +470,7 @@ if __name__ == "__main__":
         handlers=[logging.StreamHandler()],
     )
 
-    from backend.kiwoom.momentum_data_handler import MomentumDataHandler
+    from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
 
     global_only = "--global" in sys.argv
 
@@ -550,7 +550,7 @@ if __name__ == "__main__":
             )
 
         # Layer 1+2: 프리셋별 자산 배분
-        from backend.kiwoom.momentum_asset_classes import PORTFOLIO_PRESETS, get_preset
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import PORTFOLIO_PRESETS, get_preset
 
         for preset_key in ["growth", "balanced", "stable"]:
             preset = get_preset(preset_key)

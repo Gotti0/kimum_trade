@@ -22,11 +22,11 @@ MomentumBacktester: 중장기 듀얼 모멘텀 하이브리드 백테스팅 메�
   5. 사후 분석 — PerformanceAnalyzer 종합 리포트
 
 CLI 사용법:
-  python -m backend.kiwoom.momentum_backtester
-  python -m backend.kiwoom.momentum_backtester --capital 200000000
-  python -m backend.kiwoom.momentum_backtester --weight equal_weight --top-n 30
-  python -m backend.kiwoom.momentum_backtester --full  (전체 기간 백테스트)
-  python -m backend.kiwoom.momentum_backtester --global --preset balanced
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --capital 200000000
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --weight equal_weight --top-n 30
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --full  (전체 기간 백테스트)
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --global --preset balanced
 """
 
 import argparse
@@ -40,11 +40,11 @@ from typing import Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from backend.kiwoom.momentum_data_handler import MomentumDataHandler
-from backend.kiwoom.momentum_scorer import MomentumScorer
-from backend.kiwoom.momentum_rebalancer import MomentumRebalancer
-from backend.kiwoom.momentum_portfolio import MomentumPortfolioManager
-from backend.kiwoom.momentum_performance import MomentumPerformanceAnalyzer
+from backend.kiwoom.strategy.momentum.momentum_data_handler import MomentumDataHandler
+from backend.kiwoom.strategy.momentum.momentum_scorer import MomentumScorer
+from backend.kiwoom.strategy.momentum.momentum_rebalancer import MomentumRebalancer
+from backend.kiwoom.strategy.momentum.momentum_portfolio import MomentumPortfolioManager
+from backend.kiwoom.strategy.momentum.momentum_performance import MomentumPerformanceAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -348,10 +348,10 @@ class MomentumBacktester:
         recent_months: int = 12,
     ) -> dict:
         """글로벌 멀티에셋 듀얼 모멘텀 백테스트를 실행합니다."""
-        from backend.kiwoom.momentum_asset_classes import (
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import (
             get_preset, BENCHMARK_WEIGHTS,
         )
-        from backend.kiwoom.global_data_fetcher import GlobalDataFetcher
+        from backend.kiwoom.strategy.global_etf.global_data_fetcher import GlobalDataFetcher
 
         t0 = time.time()
         preset = get_preset(self.portfolio_preset)
@@ -658,16 +658,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 사용 예시 (국내):
-  python -m backend.kiwoom.momentum_backtester
-  python -m backend.kiwoom.momentum_backtester --full
-  python -m backend.kiwoom.momentum_backtester --capital 200000000 --top-n 30
-  python -m backend.kiwoom.momentum_backtester --weight equal_weight --months 24
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --full
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --capital 200000000 --top-n 30
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --weight equal_weight --months 24
 
 사용 예시 (글로벌 멀티에셋):
-  python -m backend.kiwoom.momentum_backtester --global
-  python -m backend.kiwoom.momentum_backtester --global --preset growth
-  python -m backend.kiwoom.momentum_backtester --global --preset stable --full
-  python -m backend.kiwoom.momentum_backtester --global --preset balanced --months 24 --save-json
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --global
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --global --preset growth
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --global --preset stable --full
+  python -m backend.kiwoom.strategy.momentum.momentum_backtester --global --preset balanced --months 24 --save-json
         """,
     )
 
@@ -925,7 +925,7 @@ def _save_result_json(result: dict, bt: "MomentumBacktester") -> None:
 
     # ── 글로벌 모드 전용 필드 추가 ──
     if bt.global_mode:
-        from backend.kiwoom.momentum_asset_classes import get_preset
+        from backend.kiwoom.strategy.momentum.momentum_asset_classes import get_preset
 
         preset_info = get_preset(bt.portfolio_preset)
         output["config"]["global_mode"] = True

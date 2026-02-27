@@ -12,8 +12,8 @@ Reference:
 import logging
 from typing import Optional
 
-from backend.kiwoom.alpha_filter import compute_sma, compute_ema
-from backend.kiwoom.sell_strategy import _parse_price
+from backend.kiwoom.strategy.phoenix.alpha_filter import compute_sma, compute_ema
+from backend.kiwoom.strategy.phoenix.sell_strategy import _parse_price
 
 logger = logging.getLogger(__name__)
 
