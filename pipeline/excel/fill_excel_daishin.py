@@ -17,8 +17,9 @@ except ImportError as e:
 
 from utils.config import get_logger
 from pipeline.excel.daishin_api_client import fetch_daishin_data, fetch_daishin_info, fetch_daishin_info_batch
+from pipeline.excel.kiwoom_api_client import fetch_kiwoom_minute_data
 
-logger = get_logger("fill_excel_daishin", "fill_excel_daishin.log")
+logger = get_logger("fill_excel_kiwoom_hybrid", "fill_excel_kiwoom.log")
 
 def parse_date(date_str, current_year):
     """
@@ -56,17 +57,55 @@ def clean_price(value):
     except Exception:
         return value
 
-
-
-def extract_time_points(minute_data, target_date_int):
+def add_minutes(time_int: int, minutes_to_add: int) -> int:
     """
-    Extracts the specific OHLC values for a given date from the massive minute payload.
-    time is integer HHMM (e.g., 917, 918, 919, 920) or string "917"
+    Adds or subtracts minutes from an HHMM integer format time.
+    Ex: add_minutes(900, -3) -> 857
+    Ex: add_minutes(859, 2) -> 901
+    """
+    hours = time_int // 100
+    mins = time_int % 100
+    
+    total_mins = hours * 60 + mins + minutes_to_add
+    
+    new_hours = total_mins // 60
+    new_mins = total_mins % 60
+    
+    return new_hours * 100 + new_mins
+
+
+def extract_time_points(minute_data, target_date_int, base_time: int):
+    """
+    Extracts the specific OHLC values for a given date relative to a base time.
+    base_time: e.g., 800 (8:00), 900 (9:00), 1000 (10:00).
+    Extracts: 1, 2, 3, 4, 8, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30 mins after.
     """
     extracted = {}
     
-    # Target times to extract
-    target_times = [904, 908, 911, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 929]
+    # Offsets required: (mins_after)
+    offsets = {
+        1: "1분종가",
+        2: "2분종가",
+        3: "3분종가",
+        4: "4분종가",
+        8: "8분종가",
+        11: "11분종가",
+        14: "14분종가",
+        15: "15분종가",
+        16: "16분종가",
+        17: "17분종가",
+        18: "18분종가",
+        19: "19분종가",
+        20: "20분종가",
+        21: "21분종가",
+        22: "22분종가",
+        23: "23분종가",
+        24: "24분종가",
+        25: "25분종가",
+        26: "26분종가",
+        29: "29분종가",
+        30: "30분종가"
+    }
     
     # Filter records for the specific date
     day_records = [row for row in minute_data if int(row['date']) == target_date_int]
@@ -74,30 +113,29 @@ def extract_time_points(minute_data, target_date_int):
     if not day_records:
          return extracted
          
-    # 시간 순으로 정렬하여 가장 첫 데이터의 시가를 당일 장개시 시가로 사용
+    # 정렬
     day_records = sorted(day_records, key=lambda x: int(x['time']))
-    extracted["시작가"] = clean_price(day_records[0]["open"])
+    
+    # 시작가(Open) 할당 (해당일 전체 데이터 중 가장 첫 데이터의 시가 사용 - base_time 근접 데이터 우선, 아니면 안전하게 그냥 첫 데이터)
+    # 조금 더 안전하게 base_time 이후의 첫 거래 데이터를 시가로 잡음 (VI 등으로 9시 2분 시작 시 대응)
+    valid_start_records = [r for r in day_records if int(r['time']) >= base_time]
+    if valid_start_records:
+        extracted["시작가"] = clean_price(valid_start_records[0]["open"])
+    else:
+        extracted["시작가"] = clean_price(day_records[0]["open"]) # Fallback
 
-    for row in day_records:
-        time_val = int(row['time'])
+    # 각 offset에 해당하는 종가 추출
+    for offset, col_name in offsets.items():
+        target_time = add_minutes(base_time, offset)
         
-        if time_val == 904: extracted["4분종가"] = clean_price(row["close"])
-        elif time_val == 908: extracted["8분종가"] = clean_price(row["close"])
-        elif time_val == 911: extracted["11분종가"] = clean_price(row["close"])
-        elif time_val == 914: extracted["14분종가"] = clean_price(row["close"])
-        elif time_val == 915: extracted["15분종가"] = clean_price(row["close"])
-        elif time_val == 916: extracted["16분종가"] = clean_price(row["close"])
-        elif time_val == 917: extracted["17분종가"] = clean_price(row["close"])
-        elif time_val == 918: extracted["18분종가"] = clean_price(row["close"])
-        elif time_val == 919: extracted["19분종가"] = clean_price(row["close"])
-        elif time_val == 920: extracted["20분종가"] = clean_price(row["close"])
-        elif time_val == 921: extracted["21분종가"] = clean_price(row["close"])
-        elif time_val == 922: extracted["22분종가"] = clean_price(row["close"])
-        elif time_val == 923: extracted["23분종가"] = clean_price(row["close"])
-        elif time_val == 924: extracted["24분종가"] = clean_price(row["close"])
-        elif time_val == 925: extracted["25분종가"] = clean_price(row["close"])
-        elif time_val == 926: extracted["26분종가"] = clean_price(row["close"])
-        elif time_val == 929: extracted["29분종가"] = clean_price(row["close"])
+        # target_time 이하의 가장 최근 분봉 데이터 검색 (결측치 방어로 이전 분봉 종가 끌고오기)
+        valid_rows = [r for r in day_records if int(r['time']) <= target_time]
+        
+        if valid_rows:
+            # day_records는 이미 시간 오름차순 정렬이 되어 있으므로, 마지막 원소가 가장 가까운 과거 데이터
+            extracted[col_name] = clean_price(valid_rows[-1]["close"])
+        else:
+            extracted[col_name] = None # 해당 시간 이전에 거래 데이터가 아예 없는 경우
             
     return extracted
 
@@ -134,8 +172,8 @@ def fill_excel_data(input_file):
     logger.info(f"Processing Excel File: {input_file}...")
     
     try:
-        # Assuming header is at the second row as per new object_excel xlsx
-        df = pd.read_excel(input_file, header=1)
+        # Assuming header is at the top row (header=0)
+        df = pd.read_excel(input_file, header=0)
     except Exception as e:
         logger.error(f"Failed to read Excel: {e}")
         return
@@ -260,11 +298,31 @@ def fill_excel_data(input_file):
                 df.insert(5, "대체거래소", "") # Insert at F (index 5)
             df.at[idx, "대체거래소"] = info_data.get("ATS_Nextrade")
 
+        # NXT 종목 판별 (Y/N)
+        ats_val = str(df.at[idx, "대체거래소"]).strip().upper()
+
         # 1-2. Fetch Minute Chart Data (from cache or API)
         if daishin_code not in stock_data_cache:
-             # We pad the current target date by ~1 month (+100) to safely cover all D+1~D+5 lookaheads
-             safe_required_date = date_int + 100
-             fetched_data = fetch_daishin_data(daishin_code, required_date_int=safe_required_date)
+             # We determine the exact date range needed including D+1~D+5 lookaheads
+             dates_needed = [date_int] + [dt for dt in dt_ints.values() if dt]
+             min_date = min(dates_needed)
+             max_date = max(dates_needed)
+             
+             # Pad max_date by ~7 days to ensure consecutive rows in the same spreadsheet are covered
+             try:
+                 max_dt = datetime.strptime(str(max_date), "%Y%m%d")
+                 from datetime import timedelta
+                 padded_max_dt = max_dt + timedelta(days=7)
+                 safe_base_date = int(padded_max_dt.strftime("%Y%m%d"))
+             except Exception:
+                 safe_base_date = max_date
+                 
+             is_nxt = (ats_val == "Y")
+             if is_nxt:
+                 fetched_data = fetch_kiwoom_minute_data(daishin_code, required_date_int=min_date, is_nxt=is_nxt, base_date_int=safe_base_date)
+             else:
+                 fetched_data = fetch_daishin_data(daishin_code, required_date_int=min_date)
+                 
              if fetched_data:
                  stock_data_cache[daishin_code] = fetched_data
              else:
@@ -276,18 +334,47 @@ def fill_excel_data(input_file):
             logger.warning(f"No Data downloaded for {stock_name}. Cannot fill row {idx}.")
             continue
             
-        # 2. Process NXT (which uses D+1 date)
+        # 2. Base Time 결정 로직
+        # 10시 시작 검사: 보통 컬럼 6(G열)에 입력되므로 전체 row 값을 확인
+        is_10_am_start = False
+        for val in row.values:
+            if isinstance(val, str) and "10시시작" in val.replace(" ", ""):
+                is_10_am_start = True
+                break
+        
+        base_time = 900 # 기본 KRX 시작시간 (09:00)
+        
+        if is_10_am_start:
+            base_time = 1000 # 10:00 수능 등 지연개장
+        elif ats_val == "Y":
+            base_time = 800  # 08:00 NXT 오픈
+            
+        # 3. Fallback 로직 (과거 데이터 부족 대응)
+        # NXT 종목('Y')이라 800을 설정했으나, 해당 날짜의 첫 분봉이 8시 50분 이후인 경우(KRX 시절 데이터)
+        if base_time == 800 and 1 in dt_ints:
+            day_records = [r for r in minute_data if int(r['date']) == dt_ints[1]]
+            if day_records:
+                first_time = min((int(r['time']) for r in day_records))
+                if first_time >= 850:
+                    logger.info(f"Row {idx}: ATS='Y' but first time for {dt_ints[1]} is {first_time}. Falling back to KRX base_time 900.")
+                    base_time = 900
+
+        # 4. Process D-day (A column date)
+        if date_int:
+             d0_data = extract_daily_ohlc(minute_data, date_int)
+             if d0_data:
+                 if "시가" in df.columns: df.at[idx, "시가"] = d0_data["시가"]
+                 if "고가" in df.columns: df.at[idx, "고가"] = d0_data["고가"]
+                 if "저가" in df.columns: df.at[idx, "저가"] = d0_data["저가"]
+                 if "종가" in df.columns: df.at[idx, "종가"] = d0_data["종가"]
+
+        # 4-1. Process NXT (which uses D+1 date, but only '종목.1' is strictly necessary here since OHLC is handled below)
         if 1 in dt_ints:
-             nxt_data = extract_daily_ohlc(minute_data, dt_ints[1])
-             if nxt_data:
-                 if "종목.1" in df.columns: df.at[idx, "종목.1"] = daishin_code
-                 if "시가" in df.columns: df.at[idx, "시가"] = nxt_data["시가"]
-                 if "고가" in df.columns: df.at[idx, "고가"] = nxt_data["고가"]
-                 if "종가" in df.columns: df.at[idx, "종가"] = nxt_data["종가"]
+             if "종목.1" in df.columns: df.at[idx, "종목.1"] = daishin_code
                  
-        # 3. Process Minute Data and Daily Data for D+1 (날자.1)
+        # 5. Process Minute Data and Daily Data for D+1 (날자.1)
         if 1 in dt_ints:
-            extracted = extract_time_points(minute_data, dt_ints[1])
+            extracted = extract_time_points(minute_data, dt_ints[1], base_time)
             if extracted:
                 for k, v in extracted.items():
                     if k in df.columns:
@@ -339,16 +426,15 @@ def fill_excel_data(input_file):
         modified_count += 1
             
     # Save Results
-    output_excel = os.path.splitext(input_file)[0] + "_daishin_filled.xlsx"
-    output_md = os.path.splitext(input_file)[0] + "_daishin_filled.md"
+    output_excel = os.path.splitext(input_file)[0] + "_kiwoom_filled.xlsx"
+    output_md = os.path.splitext(input_file)[0] + "_kiwoom_filled.md"
     
     try:
         df.to_excel(output_excel, index=False)
         logger.info(f"Saved filled Excel to {output_excel}")
         
-        # Also save MD (First 7 columns)
-        df_subset = df.iloc[:, :7]
-        markdown_table = df_subset.to_markdown(index=False)
+        # Also save MD
+        markdown_table = df.to_markdown(index=False)
         with open(output_md, 'w', encoding='utf-8') as f:
             f.write(markdown_table)
             

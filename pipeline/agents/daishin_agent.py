@@ -77,6 +77,7 @@ class DaishinAgent:
         chart.SetInputValue(6, ord('m')) # m: 분봉
         chart.SetInputValue(7, 1) # 1분봉
         chart.SetInputValue(9, ord('1')) # 1: 수정주가 적용 (매우 중요)
+        chart.SetInputValue(10, ord('1')) # 1: 시간외거래(장전/장후 등) 모두 포함 플래그
         
         result_data = []
         collected_count = 0
