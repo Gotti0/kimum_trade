@@ -18,6 +18,7 @@ except ImportError as e:
 from utils.config import get_logger
 from pipeline.excel.daishin_api_client import fetch_daishin_data, fetch_daishin_info, fetch_daishin_info_batch
 from pipeline.excel.kiwoom_api_client import fetch_kiwoom_minute_data
+from pipeline.excel.nasdaq_client import fetch_nasdaq_close
 
 logger = get_logger("fill_excel_kiwoom_hybrid", "fill_excel_kiwoom.log")
 
@@ -72,6 +73,18 @@ def add_minutes(time_int: int, minutes_to_add: int) -> int:
     new_mins = total_mins % 60
     
     return new_hours * 100 + new_mins
+
+
+def normalize_daishin_timestamps(data):
+    """
+    대신증권 분봉 타임스탬프를 봉 시작 시점으로 -1분 보정.
+    대신증권: 9시~9시1분 봉 → '901'로 표기 (봉 종료 시점)
+    정규화 후: → '900' (봉 시작 시점, 키움 방식과 동일)
+    """
+    for record in data:
+        original_time = int(record['time'])
+        record['time'] = str(add_minutes(original_time, -1))
+    return data
 
 
 def extract_time_points(minute_data, target_date_int, base_time: int):
@@ -135,7 +148,8 @@ def extract_time_points(minute_data, target_date_int, base_time: int):
             # day_records는 이미 시간 오름차순 정렬이 되어 있으므로, 마지막 원소가 가장 가까운 과거 데이터
             extracted[col_name] = clean_price(valid_rows[-1]["close"])
         else:
-            extracted[col_name] = None # 해당 시간 이전에 거래 데이터가 아예 없는 경우
+            # 첫 거래 이전 시점: 아직 체결이 없으므로 시작가(첫 봉 시가)로 forward-fill
+            extracted[col_name] = extracted.get("시작가")
             
     return extracted
 
@@ -223,6 +237,7 @@ def fill_excel_data(input_file):
 
     # Cache downloaded stock data to avoid re-fetching the same stock for different days
     stock_data_cache = {}
+    stock_range_cache = {}
     
     current_year = 2025 # Starting year from top of file
     prev_month = -1
@@ -302,12 +317,21 @@ def fill_excel_data(input_file):
         ats_val = str(df.at[idx, "대체거래소"]).strip().upper()
 
         # 1-2. Fetch Minute Chart Data (from cache or API)
-        if daishin_code not in stock_data_cache:
-             # We determine the exact date range needed including D+1~D+5 lookaheads
-             dates_needed = [date_int] + [dt for dt in dt_ints.values() if dt]
-             min_date = min(dates_needed)
-             max_date = max(dates_needed)
-             
+        dates_needed = [date_int] + [dt for dt in dt_ints.values() if dt]
+        min_date = min(dates_needed)
+        max_date = max(dates_needed)
+        
+        if daishin_code not in stock_range_cache:
+            stock_range_cache[daishin_code] = {"min": 99999999, "max": 0}
+            
+        checked_min = stock_range_cache[daishin_code]["min"]
+        checked_max = stock_range_cache[daishin_code]["max"]
+        
+        needs_fetch = False
+        if daishin_code not in stock_data_cache or min_date < checked_min or max_date > checked_max:
+            needs_fetch = True
+            
+        if needs_fetch:
              # Pad max_date by ~7 days to ensure consecutive rows in the same spreadsheet are covered
              try:
                  max_dt = datetime.strptime(str(max_date), "%Y%m%d")
@@ -318,18 +342,67 @@ def fill_excel_data(input_file):
                  safe_base_date = max_date
                  
              is_nxt = (ats_val == "Y")
+             data_source = "kiwoom" if is_nxt else "daishin"
+             
              if is_nxt:
                  fetched_data = fetch_kiwoom_minute_data(daishin_code, required_date_int=min_date, is_nxt=is_nxt, base_date_int=safe_base_date)
+                 
+                 # [요구사항 2] 8시 분봉 유효성 검증 → 대신증권 9시 폴백
+                 # 데이터 일관성 원칙: 한 행에는 하나의 API 소스만 사용
+                 # 더미 데이터 감지: 대체거래소 미상장 시절 time=0, open=0, close=0 레코드 대응
+                 need_daishin_fallback = False
+                 
+                 if not fetched_data:
+                     # [버그수정] 키움 API가 빈 데이터를 반환한 경우에도 대신증권 폴백
+                     logger.info(f"Row {idx}: 키움 NX 데이터 없음(빈 응답). 대신증권 9시 분봉으로 폴백.")
+                     need_daishin_fallback = True
+                 elif 1 in dt_ints:
+                     day_records = [r for r in fetched_data if int(r['date']) == dt_ints[1]]
+                     if day_records:
+                         first_time = min(int(r['time']) for r in day_records)
+                         # 더미 레코드 검증: 모든 레코드의 open/close가 0이면 유효하지 않은 데이터
+                         is_dummy = all(int(r.get('open', 0)) == 0 and int(r.get('close', 0)) == 0 for r in day_records)
+                         if is_dummy or first_time >= 850:
+                             reason = "더미 데이터(open=close=0)" if is_dummy else f"8시 분봉 미존재(first={first_time})"
+                             logger.info(f"Row {idx}: {reason}. 대신증권 9시 분봉으로 폴백.")
+                             need_daishin_fallback = True
+                     else:
+                         # D+1 날짜의 레코드가 아예 없는 경우도 폴백
+                         logger.info(f"Row {idx}: 키움 NX 데이터에 D+1({dt_ints[1]}) 레코드 없음. 대신증권 폴백.")
+                         need_daishin_fallback = True
+                 
+                 if need_daishin_fallback:
+                     fetched_data = fetch_daishin_data(daishin_code, required_date_int=min_date)
+                     if fetched_data:
+                         fetched_data = normalize_daishin_timestamps(fetched_data)
+                     data_source = "daishin"
              else:
                  fetched_data = fetch_daishin_data(daishin_code, required_date_int=min_date)
+                 # [요구사항 4] 대신증권 타임스탬프 -1분 정규화 (봉 시작 시점으로)
+                 if fetched_data:
+                     fetched_data = normalize_daishin_timestamps(fetched_data)
                  
              if fetched_data:
                  stock_data_cache[daishin_code] = fetched_data
              else:
                  stock_data_cache[daishin_code] = [] # Mark as failed/empty to avoid re-spamming API
                  
+             # Update checked range so we don't spam if it failed or already fetched
+             stock_range_cache[daishin_code]["min"] = min(stock_range_cache[daishin_code]["min"], min_date)
+             stock_range_cache[daishin_code]["max"] = max(stock_range_cache[daishin_code]["max"], max_date)
+                 
         minute_data = stock_data_cache[daishin_code]
         
+        # [버그수정] 나스닥 종가는 분봉 데이터 유무와 무관하게 항상 기록
+        # (나스닥 종가는 외부 데이터이므로 분봉 데이터 실패와 독립적)
+        nasdaq_col = "나스닥종가%" if "나스닥종가%" in df.columns else "나스닥종가"
+        if 1 in dt_ints:
+            nasdaq_close = fetch_nasdaq_close(dt_ints[1])
+            if nasdaq_close is not None:
+                if nasdaq_col not in df.columns:
+                    df[nasdaq_col] = None
+                df.at[idx, nasdaq_col] = nasdaq_close
+
         if not minute_data:
             logger.warning(f"No Data downloaded for {stock_name}. Cannot fill row {idx}.")
             continue
@@ -347,17 +420,11 @@ def fill_excel_data(input_file):
         if is_10_am_start:
             base_time = 1000 # 10:00 수능 등 지연개장
         elif ats_val == "Y":
-            base_time = 800  # 08:00 NXT 오픈
-            
-        # 3. Fallback 로직 (과거 데이터 부족 대응)
-        # NXT 종목('Y')이라 800을 설정했으나, 해당 날짜의 첫 분봉이 8시 50분 이후인 경우(KRX 시절 데이터)
-        if base_time == 800 and 1 in dt_ints:
-            day_records = [r for r in minute_data if int(r['date']) == dt_ints[1]]
-            if day_records:
-                first_time = min((int(r['time']) for r in day_records))
-                if first_time >= 850:
-                    logger.info(f"Row {idx}: ATS='Y' but first time for {dt_ints[1]} is {first_time}. Falling back to KRX base_time 900.")
-                    base_time = 900
+            # 폴백으로 대신증권을 쓴 경우 base_time은 900 유지
+            if data_source == "kiwoom":
+                base_time = 800  # 08:00 NXT 오픈 (키움 데이터 사용 시)
+            else:
+                base_time = 900  # 대신증권 폴백 시 9시 기준
 
         # 4. Process D-day (A column date)
         if date_int:

@@ -12,15 +12,19 @@ from utils.config import get_logger
 KIWOOM_CACHE_DIR = os.path.join(os.getcwd(), "cache_kiwoom")
 logger = get_logger("kiwoom_api_client", "kiwoom_api_client.log")
 
-def _get_token() -> str:
-    token_path = os.path.join(os.getcwd(), "token.json")
-    try:
-        with open(token_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("access_token", "")
-    except Exception as e:
-        logger.error(f"Failed to load Kiwoom token: {e}")
-        return ""
+try:
+    from backend.kiwoom.auth import get_token as _get_token
+except ImportError:
+    logger.warning("Could not import backend.kiwoom.auth.get_token. Falling back to basic token reader.")
+    def _get_token() -> str:
+        token_path = os.path.join(os.getcwd(), "token.json")
+        try:
+            with open(token_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("access_token", "")
+        except Exception as e:
+            logger.error(f"Failed to load Kiwoom token: {e}")
+            return ""
 
 def _get_headers(api_id: str, token: str) -> dict:
     return {
@@ -112,14 +116,11 @@ def fetch_kiwoom_minute_data(stk_cd: str, required_date_int: int = None, is_nxt:
         first_cached_date = min(dates)
         last_cached_date = max(dates)
         
-        if last_cached_date >= needed_newest:
-            initial_base_dt = first_cached_date
-            is_backfilling = True
-            logger.info(f"Cache covers newest part. Back-filling from {initial_base_dt} down to {needed_oldest}")
-        else:
-            initial_base_dt = needed_newest
-            is_backfilling = False
-            logger.info(f"Cache missing newest part. Requesting from {initial_base_dt}")
+        # [최적화] 기존에는 캐시의 최신 날짜(last_cached_date)부터 백필링을 시작해서
+        # 수개월의 불필요한 데이터를 모두 다운받는 비효율이 있었습니다.
+        # 이제는 오직 필요한 날짜(needed_newest)부터 필요한 과거(needed_oldest)까지만 딱 타겟팅해서 가져옵니다.
+        initial_base_dt = needed_newest
+        logger.info(f"Targeted fetch: Requesting specifically from {initial_base_dt} down to {needed_oldest}")
     else:
         first_cached_date = 99999999
         last_cached_date = 0
