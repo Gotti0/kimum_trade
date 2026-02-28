@@ -1,11 +1,13 @@
 """
-ThemeBacktester: 테마 기반 백테스팅 엔진.
+PhoenixBacktester: 테마 기반 시초가 매수 데이트레이딩 백테스팅 엔진.
 
-99일전부터 현재까지 매일:
-  1. N+1일전 1등 테마 구성종목 조회
-  2. 장마감 10분전(15:20) 매수
-  3. 다음 영업일 매도 전략 실행
-  4. 누적 수익률 계산
+전략 설계서(Phoenix_strage.md) 기반:
+  99일전부터 현재까지 매일:
+    1. 전일(N+1일전) 선별된 테마 구성종목 조회
+    2. 당일 시초가(09:00) 매수 (나스닥 -0.7% 이하 시 50% 분할)
+    3. 09:14 수익률 기반 당일 오전 매도 전략 실행
+       - 상한가 도달(09:15 이내) 시 홀드 + -8% 트레일링 스톱 → 익일 이월
+    4. 누적 수익률 계산
 """
 
 import os
@@ -13,6 +15,8 @@ import json
 import time
 import sys
 import logging
+import math
+import random
 from datetime import datetime, timedelta
 import yfinance as yf
 
@@ -42,11 +46,15 @@ FRICTION_COST = 0.00345
 class PhoenixBacktester:
     """피닉스 매매 전략 기반 백테스팅을 실행합니다."""
 
-    def __init__(self, initial_capital: float = 10_000_000, target_file: str = "object_excel_daishin_filled.md"):
+    def __init__(self, initial_capital: float = 10_000_000, target_file: str = "object_excel_daishin_filled.md",
+                 enable_noise: bool = False, max_participation_rate: float = 0.1, slippage_constant: float = 0.15):
         self.finder = TopThemeFinder()
         self.initial_capital = initial_capital
         self._trading_days_cache: list[str] = []  # YYYYMMDD
         self._daily_bars_cache: dict[str, list[dict]] = {}
+        self.enable_noise = enable_noise
+        self.max_participation_rate = max_participation_rate
+        self.slippage_constant = slippage_constant
         
         # 종목 메타 데이터 로드
         self.target_file = target_file if target_file else "object_excel_daishin_filled.md"
@@ -224,6 +232,54 @@ class PhoenixBacktester:
                 
         # theme_finder에서 오름차순 정렬해서 넘겨주므로 그대로 반환 ([-1]이 최신)
         return result
+
+    def _get_sell_window_with_noise(self, profit_rate_914: float) -> tuple[int, int]:
+        if profit_rate_914 <= -0.09:
+            base_start, base_end = 924, 927
+        elif -0.09 < profit_rate_914 <= -0.04:
+            base_start, base_end = 921, 922
+        elif -0.04 < profit_rate_914 < -0.001:  # -0.1% ~ -4%
+            base_start, base_end = 919, 920
+        elif -0.001 <= profit_rate_914 <= 0.04:
+            base_start, base_end = 924, 927
+        elif 0.04 < profit_rate_914 <= 0.09:
+            base_start, base_end = 920, 924
+        else: 
+            base_start, base_end = 917, 919
+
+        if not self.enable_noise:
+            return base_start, base_end
+            
+        noise_start = random.randint(-2, 2)
+        noise_end = random.randint(-2, 2) 
+        
+        sell_start_noisy = base_start + noise_start
+        sell_end_noisy = max(sell_start_noisy, base_end + noise_end)
+        
+        def _normalize(t):
+            h, m = divmod(t, 100)
+            if m >= 60:
+                h += 1
+                m -= 60
+            elif m < 0:
+                h -= 1
+                m += 60
+            return h * 100 + m
+
+        return _normalize(sell_start_noisy), _normalize(sell_end_noisy)
+
+    def _calculate_dynamic_slippage(self, order_amount: float, bar_total_volume_amount: float, bar_high: float, bar_low: float, bar_open: float) -> float:
+        if bar_total_volume_amount <= 0:
+            return 0.05
+            
+        participation_rate = order_amount / bar_total_volume_amount
+        if participation_rate < 0.01:
+            return 0.0
+            
+        bar_volatility = (bar_high - bar_low) / bar_open if bar_open > 0 else 0.01
+        market_impact_pct = self.slippage_constant * bar_volatility * math.sqrt(participation_rate)
+        
+        return min(market_impact_pct, 0.05)
 
     # ── 메인 백테스팅 루프 ─────────────────────────────────
 
@@ -417,61 +473,81 @@ class PhoenixBacktester:
                             
                     profit_rate_914 = (price_914 - buy_price) / buy_price
                     
-                    # 시간대 매도 공식(기획 문서 스펙 정확히 일치)
-                    if profit_rate_914 <= -0.09:
-                        sell_start, sell_end = 924, 927
-                    elif -0.09 < profit_rate_914 <= -0.04:
-                        sell_start, sell_end = 921, 922
-                    elif -0.04 < profit_rate_914 < -0.001:  # -0.1% ~ -4%
-                        sell_start, sell_end = 919, 920
-                    elif -0.001 <= profit_rate_914 <= 0.04: # 수익권 미미 하락 -0.1% ~ +4%
-                        sell_start, sell_end = 924, 927
-                    elif 0.04 < profit_rate_914 <= 0.09:
-                        sell_start, sell_end = 920, 924
-                    else: 
-                        sell_start, sell_end = 917, 919
+                    sell_start, sell_end = self._get_sell_window_with_noise(profit_rate_914)
                         
-                    sell_price = 0
-                    sell_time = ""
                     upper_limit = yesterday_close * 1.30
                     is_hit_upper = False
                     sell_reason = ""
                     pos_to_carry_over = None
                     
+                    available_capital = self.initial_capital * cumulative_return
+                    capital_per_stock = available_capital / len(target_stocks)
+                    total_shares_to_sell = capital_per_stock / buy_price if buy_price > 0 else 0
+                    
+                    # 상한가 도달 스캔
                     for bar in sorted_minutes:
                         hhmm = int(bar.get("time", 0))
                         cur_prc = abs(float(bar.get("close", 0)))
-                        
-                        # 상한가 도달 체크 (15분 이내) 문서상 상한가 터치 시 익일 매도
                         if hhmm <= 915 and cur_prc >= upper_limit * 0.99:
                             is_hit_upper = True
-                            
-                        # 시간대 분할 매도 적용 (상한가 미도달 시)
-                        if sell_start <= hhmm <= sell_end and not is_hit_upper:
-                            sell_price = cur_prc
-                            sell_time = f"{hhmm:04d}"
-                            sell_reason = "시간대 목표 달성"
                             break
                             
                     if is_hit_upper:
-                        # 15분 이내 상한가 달성 -> 팔지 않고 이월
                         pos_to_carry_over = {
                             "stk_cd": stk_cd,
                             "stk_nm": stk_nm,
                             "buy_price": buy_price,
                             "buy_date": trading_date,
-                            "is_ats": is_ats
+                            "is_ats": is_ats,
+                            "volume": total_shares_to_sell
                         }
                         survived_positions.append(pos_to_carry_over)
-                        # 당일 청산되지 않았으므로 거래 이력/수익률 산정에서 스킵
                         continue
                         
-                    if sell_price == 0 and not is_hit_upper:
-                        # 안 팔렸으면 종가 강제 청산
-                        last_bar = sorted_minutes[-1]
-                        sell_price = abs(float(last_bar.get("close", 0)))
-                        sell_time = f"{int(last_bar.get('time', 0)):04d}"
-                        sell_reason = "종가 강제 청산"
+                    # TWAP 및 동적 슬리피지 기반 분할 매도
+                    twap_bars = [b for b in sorted_minutes if sell_start <= int(b.get("time", 0)) <= sell_end]
+                    if not twap_bars:
+                        twap_bars = [sorted_minutes[-1]]
+                        
+                    num_slices = len(twap_bars)
+                    shares_per_slice = total_shares_to_sell / num_slices if num_slices > 0 else 0
+                    
+                    total_revenue = 0.0
+                    remaining_shares = total_shares_to_sell
+                    target_shares_cumulative = 0.0
+                    
+                    for i, bar in enumerate(twap_bars):
+                        target_shares_cumulative += shares_per_slice
+                        desired_to_sell = min(remaining_shares, target_shares_cumulative - (total_shares_to_sell - remaining_shares))
+                        
+                        cur_high = abs(float(bar.get("high", 0)))
+                        cur_low = abs(float(bar.get("low", 0)))
+                        cur_close = abs(float(bar.get("close", 0)))
+                        cur_open = abs(float(bar.get("open", 0)))
+                        
+                        typical_price = (cur_high + cur_low + cur_close) / 3.0 if (cur_high + cur_low + cur_close) > 0 else cur_open
+                        bar_vol_shares = float(bar.get("volume", 0))
+                        bar_total_volume_amount = bar_vol_shares * typical_price
+                        
+                        max_fillable_shares = bar_vol_shares * self.max_participation_rate
+                        actual_shares_to_sell = min(desired_to_sell, max_fillable_shares)
+                        
+                        if i == len(twap_bars) - 1:
+                            actual_shares_to_sell = remaining_shares # 마지막 봉엔 전량 시장가 투매
+                            
+                        actual_order_amount = actual_shares_to_sell * typical_price
+                        impact_penalty = self._calculate_dynamic_slippage(actual_order_amount, bar_total_volume_amount, cur_high, cur_low, cur_open)
+                        if i == len(twap_bars) - 1 and remaining_shares > max_fillable_shares:
+                            impact_penalty = 0.05 # 유동성 캡 초과 투매 페널티 max
+                            
+                        adjusted_price = typical_price * (1 - impact_penalty)
+                        
+                        total_revenue += actual_shares_to_sell * adjusted_price
+                        remaining_shares -= actual_shares_to_sell
+                        
+                    sell_reason = "TWAP 분할 청산 (슬리피지)"
+                    sell_time = twap_bars[0].get("time") if twap_bars else "N/A"
+                    sell_price = total_revenue / total_shares_to_sell if total_shares_to_sell > 0 else buy_price
                         
                         
                     # 수익 계산
@@ -1063,6 +1139,11 @@ if __name__ == "__main__":
         help="[legacy/phoenix] 매매 대상 마크다운 파일 (기본값: object_excel_daishin_filled.md)"
     )
     parser.add_argument(
+        "--noise",
+        action="store_true",
+        help="[legacy/phoenix] 매도 시간대에 ±2분 무작위 노이즈 주입 (Monte Carlo 강건성 테스트)"
+    )
+    parser.add_argument(
         "--volume-top-n",
         type=int,
         default=100,
@@ -1164,8 +1245,9 @@ if __name__ == "__main__":
         backtester = PhoenixBacktester(
             initial_capital=args.capital,
             target_file=args.target_file,
+            enable_noise=args.noise,
         )
         result = backtester.run(start_days_ago=args.days)
         print(result["summary"])
-        print(f"\n  데이터 모드: {args.mode}, 타겟 파일: {args.target_file}")
+        print(f"\n  데이터 모드: {args.mode}, 타겟 파일: {args.target_file}, 노이즈: {args.noise}")
 
