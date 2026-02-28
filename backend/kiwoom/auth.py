@@ -83,18 +83,53 @@ def revoke_token(appkey: str, secretkey: str, token: str, use_mock: bool = False
         return False
 
 def get_token() -> str:
-    """Reads the token from root token.json file."""
-    if not os.path.exists(TOKEN_PATH):
-        logger.error(f"No token found at {TOKEN_PATH}. Please generate one first.")
+    """Reads the token from root token.json file. If missing or expired, issues a new one."""
+    from datetime import datetime
+    from dotenv import load_dotenv
+
+    def _issue_new_token():
+        load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+        appkey = os.getenv("appkey")
+        secretkey = os.getenv("secretkey")
+        use_mock = os.getenv("USE_MOCK_KIWOOM", "0") == "1"
+
+        if not appkey or not secretkey:
+            logger.error("Cannot auto-issue token: appkey or secretkey not found in .env")
+            return ""
+
+        logger.info("Auto-issuing new Kiwoom token...")
+        token_data = issue_token(appkey, secretkey, use_mock)
+        if token_data:
+            return token_data.get("access_token", "")
         return ""
-        
+
+    if not os.path.exists(TOKEN_PATH):
+        logger.warning(f"No token found at {TOKEN_PATH}. Attempting to auto-issue...")
+        return _issue_new_token()
+
     try:
         with open(TOKEN_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return data.get("access_token", "")
+
+        access_token = data.get("access_token", "")
+        expires_dt_str = data.get("expires_dt", "")
+
+        if expires_dt_str:
+            try:
+                expires_dt = datetime.strptime(expires_dt_str, "%Y%m%d%H%M%S")
+                if datetime.now() >= expires_dt:
+                    logger.warning("Token has expired. Attempting to auto-issue...")
+                    return _issue_new_token()
+            except ValueError:
+                pass
+
+        if not access_token:
+            return _issue_new_token()
+
+        return access_token
     except Exception as e:
         logger.error(f"Failed to load Kiwoom token: {e}")
-        return ""
+        return _issue_new_token()
 
 if __name__ == "__main__":
     from dotenv import load_dotenv

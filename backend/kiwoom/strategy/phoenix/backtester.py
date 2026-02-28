@@ -14,6 +14,7 @@ import time
 import sys
 import logging
 from datetime import datetime, timedelta
+import yfinance as yf
 
 from backend.kiwoom.strategy.phoenix.theme_finder import TopThemeFinder
 from backend.kiwoom.strategy.phoenix.sell_strategy import SellStrategyEngine, _parse_price
@@ -50,6 +51,33 @@ class PhoenixBacktester:
         # 종목 메타 데이터 로드
         self.target_file = target_file if target_file else "object_excel_daishin_filled.md"
         self.target_stocks_history = self._load_target_stocks_history()
+        
+        # 나스닥 등락률 캐시 (-0.7% 이하 추적용)
+        self.nasdaq_daily_change_cache = {}
+
+    def _get_nasdaq_change(self, target_date: str) -> float:
+        """주어진 일자의 나스닥 지수 상승/하락률 반환 (YyyyMMDD 기준)"""
+        import pandas as pd
+        if target_date in self.nasdaq_daily_change_cache:
+            return self.nasdaq_daily_change_cache[target_date]
+            
+        try:
+            # yfinance는 timezone을 인식하므로 UTC-5/-4 기준 전영업일을 찾기 위해 넉넉한 기간 조회
+            end_dt = datetime.strptime(target_date, "%Y%m%d")
+            start_dt = end_dt - timedelta(days=7)
+            nasdaq = yf.Ticker('^IXIC')
+            hist = nasdaq.history(start=start_dt.strftime("%Y-%m-%d"), end=end_dt.strftime("%Y-%m-%d"))
+            if len(hist) >= 2:
+                # 가장 최근(target_date 기준 직전 영업일) 변동률 계산
+                last_close = hist['Close'].iloc[-1]
+                prev_close = hist['Close'].iloc[-2]
+                change_rate = (last_close - prev_close) / prev_close
+                self.nasdaq_daily_change_cache[target_date] = change_rate
+                return change_rate
+        except Exception as e:
+            logger.warning(f"나스닥 지수 조회 실패: {e}")
+            
+        return 0.0
 
     def _load_target_stocks_history(self) -> dict:
         """MD 파일에서 일자별 매매 대상 종목을 로드하여 매핑(dict) 반환"""
@@ -206,6 +234,10 @@ class PhoenixBacktester:
         cumulative_return = 1.0
         trades = []
         
+        # [NEW] 오버나잇 (상한가 이월 등) 포지션 상태 관리
+        # 각 항목은 dict: {"stk_cd": str, "stk_nm": str, "buy_price": float, "buy_date": str, "volume": float} (금액 베이스에서는 금액 비중 등 활용)
+        positions = []
+        
         logger.info("=" * 70)
         logger.info("  백테스팅 시작: [PhoenixBacktester] %d 영업일 전 → 현재", start_days_ago)
         logger.info("  초기 자본금: %s원", f"{self.initial_capital:,.0f}")
@@ -225,14 +257,109 @@ class PhoenixBacktester:
             if not trading_date or not record_date:
                 continue
             
-            # 기록일 기준 추출된 타겟 종목 로드
+            day_returns = []
+            
+            # --- 1) 기존 이월된 오버나잇 포지션 청산 로직 ---
+            survived_positions = []
+            for pos in positions:
+                stk_cd = pos["stk_cd"]
+                stk_nm = pos["stk_nm"]
+                buy_price = pos["buy_price"]
+                buy_date = pos["buy_date"]
+                
+                is_ats = pos.get("is_ats", False)
+                today_minute_bars = self._get_minute_chart_cached(stk_cd, trading_date, is_ats=is_ats)
+                if not today_minute_bars:
+                    # 데이터 없으면 그대로 이월하거나 임의 종가 청산해야 하나, 여기서는 강제 청산(전일 종가 등) 가정
+                    survived_positions.append(pos)
+                    continue
+                
+                sorted_minutes = sorted(today_minute_bars, key=lambda x: int(x.get("time", 0)))
+                # 가장 먼저 등장하는 유효한(0보다 큰) open/close 가격을 open_price로 간주
+                open_bar = sorted_minutes[0]
+                open_price = 0
+                for bar in sorted_minutes:
+                    prc = abs(float(bar.get("open", 0)))
+                    if prc == 0:
+                        prc = abs(float(bar.get("close", 0)))
+                    if prc > 0:
+                        open_bar = bar
+                        open_price = prc
+                        break
+                
+                # 전일 상한가 종목의 오늘 시초가 확인 (이전일 종가는 pos['buy_price'] 기준 혹은 캐시에서 확인)
+                daily_bars = self._get_daily_bars_up_to(stk_cd, trading_date)
+                if len(daily_bars) >= 2:
+                    yesterday_close = abs(_parse_price(daily_bars[-2].get("cur_prc", "0")))
+                else:
+                    yesterday_close = open_price
+                
+                sell_price = 0
+                sell_time = ""
+                sell_reason = ""
+                
+                if open_price >= yesterday_close * 1.29: # 시초가가 사실상 상한가 (연상) 인 경우
+                    # 연상 시작: -8% 트레일링 스탑 적용
+                    trailing_stop = open_price * 0.92
+                    for bar in sorted_minutes:
+                        hhmm = int(bar.get("time", 0))
+                        cur_prc = abs(float(bar.get("close", 0)))
+                        if cur_prc <= trailing_stop:
+                            sell_price = cur_prc
+                            sell_time = f"{hhmm:04d}"
+                            sell_reason = "이월_연상 후 Trailing Stop"
+                            break
+                    if sell_price == 0:
+                        last_bar = sorted_minutes[-1]
+                        sell_price = abs(float(last_bar.get("close", 0)))
+                        sell_time = f"{int(last_bar.get('time', 0)):04d}"
+                        sell_reason = "이월_연상 후 종가 강제 청산"
+                else:
+                    # 상한가 미도달 시초가(갭하락 등) -> 시초가(또는 하한가 시장가) 전량 매도
+                    sell_price = open_price
+                    sell_time = f"{int(open_bar.get('time', 0)):04d}"
+                    sell_reason = "이월_시초가 시장가 매도"
+                
+                sell_price_after_friction = sell_price * (1 - FRICTION_COST / 2)
+                buy_price_with_friction = buy_price * (1 + FRICTION_COST / 2)
+                ret_after_friction = (sell_price_after_friction - buy_price_with_friction) / buy_price_with_friction
+                day_returns.append(ret_after_friction)
+                
+                trades.append({
+                    "day_offset": day_offset,
+                    "trading_date": trading_date,
+                    "record_date": record_date,
+                    "stk_cd": stk_cd,
+                    "stk_nm": stk_nm,
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "sell_time": sell_time,
+                    "profit_rate_914": 0.0, # 이월 포지션은 9시14분 수치 생략
+                    "return_rate": ret_after_friction * 100,
+                    "sell_reason": sell_reason
+                })
+                
+            positions = survived_positions # 매도된 포지션 비우기
+
+            # --- 2) 신규 타겟 종목 진입 비즈니스 로직 ---
             target_stocks = self.target_stocks_history.get(record_date, [])
             
             if not target_stocks:
+                # 수익률 반영 후 넘어감
+                if day_returns:
+                    avg_daily_return = sum(day_returns) / len(day_returns)
+                    cumulative_return *= (1 + avg_daily_return)
+                    cumul_pct = (cumulative_return - 1) * 100
+                    logger.info(
+                        f"{day_offset:>4} | {trading_date:<10} | {record_date:<10} | "
+                        f"{'Overnight Only':<12} | "
+                        f"{avg_daily_return*100:>+7.2f}% | {cumul_pct:>+7.2f}%"
+                    )
                 continue
                 
-            day_returns = []
-            
+            # 나스닥 전일 변동률 (-0.7% 이하 시 50% 분할 매수 기믹 처리용. 현재는 로그 및 단가 보정에 활용)
+            nasdaq_change = self._get_nasdaq_change(trading_date)
+
             for stk in target_stocks:
                 stk_cd = stk["stk_cd"]
                 stk_nm = stk["stk_nm"]
@@ -242,8 +369,7 @@ class PhoenixBacktester:
                     if len(daily_bars) < 2:
                         continue
                     
-                    # 오름차순 정렬되어 있으므로 [-1]은 당일(또는 제일 최신), [-2]는 전일 종가
-                    yesterday_close = _parse_price(daily_bars[-2].get("cur_prc", "0"))
+                    yesterday_close = abs(_parse_price(daily_bars[-2].get("cur_prc", "0")))
                     
                     is_ats = stk.get("is_ats", False)
                     today_minute_bars = self._get_minute_chart_cached(stk_cd, trading_date, is_ats=is_ats)
@@ -255,32 +381,50 @@ class PhoenixBacktester:
                     sorted_minutes = sorted(today_minute_bars, key=lambda x: int(x.get("time", 0)))
                     
                     open_bar = sorted_minutes[0]
-                    open_price = float(open_bar.get("open", 0))
+                    open_price = 0
+                    for bar in sorted_minutes:
+                        prc = abs(float(bar.get("open", 0)))
+                        if prc == 0:
+                            prc = abs(float(bar.get("close", 0)))
+                        if prc > 0:
+                            open_bar = bar
+                            open_price = prc
+                            break
                     
                     if yesterday_close == 0 or open_price == 0:
                         continue
                         
-                    # 매수
-                    buy_price = open_price # 백테스트 환경상 시초가 시장가 매입 간주
+                    # 매수 결정 및 평균 단가 산정
+                    # 문서: 나스닥 -0.7% 이하이면 시초가 50%, 9분01초 50%
+                    if nasdaq_change <= -0.007:
+                        open_price_val = open_price
+                        min_1_price = open_price
+                        for bar in sorted_minutes:
+                            if int(bar.get("time", 0)) == 901:
+                                min_1_price = abs(float(bar.get("close", 0)))
+                                break
+                        buy_price = (open_price_val + min_1_price) / 2
+                    else:
+                        buy_price = open_price # 시장가 매입 간주
                     
-                    # 9시 14분 가격 조회
-                    price_914 = open_price
+                    # 9시 14분 가격 조회 (수익률 구간 판단용)
+                    price_914 = buy_price
                     for bar in sorted_minutes:
                         t_int = int(bar.get("time", 0))
                         if t_int == 914:
-                            price_914 = float(bar.get("close", 0))
+                            price_914 = abs(float(bar.get("close", 0)))
                             break
                             
                     profit_rate_914 = (price_914 - buy_price) / buy_price
                     
-                    # 시간대 매도 공식
+                    # 시간대 매도 공식(기획 문서 스펙 정확히 일치)
                     if profit_rate_914 <= -0.09:
                         sell_start, sell_end = 924, 927
                     elif -0.09 < profit_rate_914 <= -0.04:
                         sell_start, sell_end = 921, 922
-                    elif -0.04 < profit_rate_914 < 0.00:
+                    elif -0.04 < profit_rate_914 < -0.001:  # -0.1% ~ -4%
                         sell_start, sell_end = 919, 920
-                    elif 0.00 <= profit_rate_914 <= 0.04:
+                    elif -0.001 <= profit_rate_914 <= 0.04: # 수익권 미미 하락 -0.1% ~ +4%
                         sell_start, sell_end = 924, 927
                     elif 0.04 < profit_rate_914 <= 0.09:
                         sell_start, sell_end = 920, 924
@@ -291,24 +435,16 @@ class PhoenixBacktester:
                     sell_time = ""
                     upper_limit = yesterday_close * 1.30
                     is_hit_upper = False
-                    trailing_stop_price = 0
                     sell_reason = ""
+                    pos_to_carry_over = None
                     
                     for bar in sorted_minutes:
                         hhmm = int(bar.get("time", 0))
-                        cur_prc = float(bar.get("close", 0))
+                        cur_prc = abs(float(bar.get("close", 0)))
                         
-                        # 상한가 도달 체크 (15분 이내)
+                        # 상한가 도달 체크 (15분 이내) 문서상 상한가 터치 시 익일 매도
                         if hhmm <= 915 and cur_prc >= upper_limit * 0.99:
                             is_hit_upper = True
-                            trailing_stop_price = cur_prc * 0.92
-                            
-                        # 상한가 트레일링 스톱 이탈
-                        if is_hit_upper and cur_prc <= trailing_stop_price:
-                            sell_price = cur_prc
-                            sell_time = f"{hhmm:04d}"
-                            sell_reason = "상한가 Trailing Stop"
-                            break
                             
                         # 시간대 분할 매도 적용 (상한가 미도달 시)
                         if sell_start <= hhmm <= sell_end and not is_hit_upper:
@@ -317,11 +453,26 @@ class PhoenixBacktester:
                             sell_reason = "시간대 목표 달성"
                             break
                             
-                    if sell_price == 0:
+                    if is_hit_upper:
+                        # 15분 이내 상한가 달성 -> 팔지 않고 이월
+                        pos_to_carry_over = {
+                            "stk_cd": stk_cd,
+                            "stk_nm": stk_nm,
+                            "buy_price": buy_price,
+                            "buy_date": trading_date,
+                            "is_ats": is_ats
+                        }
+                        survived_positions.append(pos_to_carry_over)
+                        # 당일 청산되지 않았으므로 거래 이력/수익률 산정에서 스킵
+                        continue
+                        
+                    if sell_price == 0 and not is_hit_upper:
+                        # 안 팔렸으면 종가 강제 청산
                         last_bar = sorted_minutes[-1]
-                        sell_price = float(last_bar.get("close", 0))
+                        sell_price = abs(float(last_bar.get("close", 0)))
                         sell_time = f"{int(last_bar.get('time', 0)):04d}"
                         sell_reason = "종가 강제 청산"
+                        
                         
                     # 수익 계산
                     sell_price_after_friction = sell_price * (1 - FRICTION_COST / 2)
