@@ -16,7 +16,6 @@ except ImportError as e:
     sys.exit(1)
 
 from utils.config import get_logger
-from pipeline.excel.daishin_api_client import fetch_daishin_data, fetch_daishin_info, fetch_daishin_info_batch
 from pipeline.excel.kiwoom_api_client import fetch_kiwoom_minute_data
 from pipeline.excel.nasdaq_client import fetch_nasdaq_close
 
@@ -61,8 +60,6 @@ def clean_price(value):
 def add_minutes(time_int: int, minutes_to_add: int) -> int:
     """
     Adds or subtracts minutes from an HHMM integer format time.
-    Ex: add_minutes(900, -3) -> 857
-    Ex: add_minutes(859, 2) -> 901
     """
     hours = time_int // 100
     mins = time_int % 100
@@ -74,82 +71,107 @@ def add_minutes(time_int: int, minutes_to_add: int) -> int:
     
     return new_hours * 100 + new_mins
 
-
-def normalize_daishin_timestamps(data):
+def detect_base_time(day_records):
     """
-    대신증권 분봉 타임스탬프를 봉 시작 시점으로 -1분 보정.
-    대신증권: 9시~9시1분 봉 → '901'로 표기 (봉 종료 시점)
-    정규화 후: → '900' (봉 시작 시점, 키움 방식과 동일)
+    Detects the starting time of the day by comparing early morning volume.
+    We check the sum of volume from 09:00~09:05 vs 10:00~10:05 to account for
+    delayed first-ticks (e.g. 09:02 first trade).
     """
-    for record in data:
-        original_time = int(record['time'])
-        record['time'] = str(add_minutes(original_time, -1))
-    return data
-
+    if not day_records:
+        return 900, "9시 시작"
+        
+    vol_0900_window = 0
+    vol_1000_window = 0
+    
+    for r in day_records:
+        t = int(r['time'])
+        if 900 <= t <= 905:
+            vol_0900_window += int(r.get('volume', 0))
+        elif 1000 <= t <= 1005:
+            vol_1000_window += int(r.get('volume', 0))
+            
+    # 정규장(9시)이 정상적으로 열렸다면 09:00~09:05 거래량이 매우 큽니다.
+    # 수능 등 10시 개장일인 경우에만 10:00~10:05 거래량이 9시 구간보다 압도적으로 큽니다.
+    if vol_1000_window > (vol_0900_window * 5) and vol_1000_window > 1000:
+        return 1000, "10시 시작"
+        
+    # 데이터가 비정상적으로 부족한 경우 시초 거래 시간을 확인합니다. (NXT 8시 제외)
+    if vol_0900_window == 0 and vol_1000_window == 0:
+        for r in day_records:
+            t = int(r['time'])
+            if t >= 900:  # 8시(NXT) 제외한 첫 정규 거래시간
+                if t >= 1000 and t < 1100:
+                    return 1000, "10시 시작"
+                break
+                
+    return 900, "9시 시작"
 
 def extract_time_points(minute_data, target_date_int, base_time: int):
     """
     Extracts the specific OHLC values for a given date relative to a base time.
-    base_time: e.g., 800 (8:00), 900 (9:00), 1000 (10:00).
     Extracts: 1, 2, 3, 4, 8, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30 mins after.
+    Values are NOT forward filled; if data is missing, we leave it as None.
     """
     extracted = {}
     
-    # Offsets required: (mins_after)
     offsets = {
-        1: "1분종가",
-        2: "2분종가",
-        3: "3분종가",
-        4: "4분종가",
-        8: "8분종가",
-        11: "11분종가",
-        14: "14분종가",
-        15: "15분종가",
-        16: "16분종가",
-        17: "17분종가",
-        18: "18분종가",
-        19: "19분종가",
-        20: "20분종가",
-        21: "21분종가",
-        22: "22분종가",
-        23: "23분종가",
-        24: "24분종가",
-        25: "25분종가",
-        26: "26분종가",
-        29: "29분종가",
+        1: "1분종가", 2: "2분종가", 3: "3분종가", 4: "4분종가",
+        8: "8분종가", 11: "11분종가", 14: "14분종가", 15: "15분종가",
+        16: "16분종가", 17: "17분종가", 18: "18분종가", 19: "19분종가",
+        20: "20분종가", 21: "21분종가", 22: "22분종가", 23: "23분종가",
+        24: "24분종가", 25: "25분종가", 26: "26분종가", 29: "29분종가",
         30: "30분종가"
     }
     
-    # Filter records for the specific date
     day_records = [row for row in minute_data if int(row['date']) == target_date_int]
-    
     if not day_records:
          return extracted
          
-    # 정렬
     day_records = sorted(day_records, key=lambda x: int(x['time']))
     
-    # 시작가(Open) 할당 (해당일 전체 데이터 중 가장 첫 데이터의 시가 사용 - base_time 근접 데이터 우선, 아니면 안전하게 그냥 첫 데이터)
-    # 조금 더 안전하게 base_time 이후의 첫 거래 데이터를 시가로 잡음 (VI 등으로 9시 2분 시작 시 대응)
+def extract_time_points(minute_data, target_date_int, base_time: int):
+    """
+    Extracts the specific OHLC values for a given date relative to a base time.
+    Extracts: 1, 2, 3, 4, 8, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 29, 30 mins after.
+    Values are NOT forward filled; if data is missing, we leave it as None.
+    """
+    extracted = {}
+    
+    offsets = {
+        1: "1분종가", 2: "2분종가", 3: "3분종가", 4: "4분종가",
+        8: "8분종가", 11: "11분종가", 14: "14분종가", 15: "15분종가",
+        16: "16분종가", 17: "17분종가", 18: "18분종가", 19: "19분종가",
+        20: "20분종가", 21: "21분종가", 22: "22분종가", 23: "23분종가",
+        24: "24분종가", 25: "25분종가", 26: "26분종가", 29: "29분종가",
+        30: "30분종가"
+    }
+    
+    day_records = [row for row in minute_data if int(row['date']) == target_date_int]
+    if not day_records:
+         return extracted
+         
+    day_records = sorted(day_records, key=lambda x: int(x['time']))
+    
+    # Extract Open (first minute on or after base_time)
     valid_start_records = [r for r in day_records if int(r['time']) >= base_time]
     if valid_start_records:
-        extracted["시작가"] = clean_price(valid_start_records[0]["open"])
+        start_price = clean_price(valid_start_records[0]["open"])
     else:
-        extracted["시작가"] = clean_price(day_records[0]["open"]) # Fallback
+        # Fallback to absolute first record
+        start_price = clean_price(day_records[0]["open"])
+        
+    extracted["시작가"] = start_price
 
-    # 각 offset에 해당하는 종가 추출
     for offset, col_name in offsets.items():
         target_time = add_minutes(base_time, offset)
         
-        # target_time 이하의 가장 최근 분봉 데이터 검색 (결측치 방어로 이전 분봉 종가 끌고오기)
-        valid_rows = [r for r in day_records if int(r['time']) <= target_time]
+        # Look for the exact minute match. (No fallback)
+        exact_record = [r for r in day_records if int(r['time']) == target_time]
         
-        if valid_rows:
-            # day_records는 이미 시간 오름차순 정렬이 되어 있으므로, 마지막 원소가 가장 가까운 과거 데이터
-            extracted[col_name] = clean_price(valid_rows[-1]["close"])
+        if exact_record:
+            extracted[col_name] = clean_price(exact_record[0]["close"])
         else:
-            # 첫 거래 이전 시점: 아직 체결이 없으므로 시작가(첫 봉 시가)로 forward-fill
-            extracted[col_name] = extracted.get("시작가")
+            extracted[col_name] = None
             
     return extracted
 
@@ -157,9 +179,7 @@ def extract_daily_ohlc(minute_data, target_date_int):
     """
     Extracts the daily High, Low, Open, Close values for a given date from 1-minute data.
     """
-    # Filter records for the specific date
     day_records = [row for row in minute_data if int(row['date']) == target_date_int]
-    
     if not day_records:
          return None
          
@@ -186,60 +206,32 @@ def fill_excel_data(input_file):
     logger.info(f"Processing Excel File: {input_file}...")
     
     try:
-        # Assuming header is at the top row (header=0)
         df = pd.read_excel(input_file, header=0)
     except Exception as e:
         logger.error(f"Failed to read Excel: {e}")
         return
 
-    # Handle typos or alternative names for date column
+    # Handle typos
     for alt_name in ["날짜", "실제", "일자", "날짜 "]:
         if alt_name in df.columns and "날자" not in df.columns:
             df.rename(columns={alt_name: "날자"}, inplace=True)
             break
             
-    # Get required columns mapped safely
-    # In pandas with duplicate names: '날자.1', '시가', '고가' etc.
-    # To check easily, we don't strictly require ALL 51 columns but we shouldn't crash.
     required_cols = ["날자", "종목", "날자.1"]
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
         logger.error(f"Missing base columns in Excel. Must contain: {required_cols}")
         return
 
-    # =============== [PHASE 3 OPTIMIZATION] PRE-FETCH COMPANY INFO ===============
-    logger.info("Extracting unique stock codes for batch info pre-fetching...")
-    unique_stocks = df["종목"].dropna().unique()
-    unique_daishin_codes = []
-    
-    for stock_name in unique_stocks:
-        raw_code = get_code_by_name(stock_name)
-        if raw_code:
-            unique_daishin_codes.append(f"A{raw_code}")
-            
-    # Deduplicate again just in case
-    unique_daishin_codes = list(set(unique_daishin_codes))
-    
-    company_info_cache = {}
-    CHUNK_SIZE = 200
-    
-    if unique_daishin_codes:
-        logger.info(f"Initiating batch fetch for {len(unique_daishin_codes)} unique stocks in {len(unique_daishin_codes)//CHUNK_SIZE + 1} chunks.")
-        
-        for i in range(0, len(unique_daishin_codes), CHUNK_SIZE):
-            chunk = unique_daishin_codes[i:i+CHUNK_SIZE]
-            batch_result = fetch_daishin_info_batch(chunk)
-            if batch_result:
-                 company_info_cache.update(batch_result)
-                 
-        logger.info(f"Successfully pre-fetched company info for {len(company_info_cache)} stocks. Proceeding to main loop.")
-    # =================================================================================
+    # Add "시작시간" column if not present
+    if "시작시간" not in df.columns:
+        # insert near the start (e.g., column index 2)
+        df.insert(2, "시작시간", "")
 
-    # Cache downloaded stock data to avoid re-fetching the same stock for different days
     stock_data_cache = {}
     stock_range_cache = {}
     
-    current_year = 2025 # Starting year from top of file
+    current_year = 2025
     prev_month = -1
     modified_count = 0
 
@@ -250,13 +242,11 @@ def fill_excel_data(input_file):
         if pd.isna(date_raw) or pd.isna(stock_name):
             continue
             
-        # Parse Date & Handle Year Rollback
         date_int, parsed_year, month = parse_date(date_raw, current_year)
         
         if parsed_year != current_year:
             current_year = parsed_year
         elif prev_month != -1 and month and month > prev_month:
-            # e.g., prev was 1 (Jan), now 12 (Dec) -> Year decreased
             current_year -= 1
             date_int, _, _ = parse_date(date_raw, current_year)
             logger.info(f"Year rollback triggered! Now processing year: {current_year} at row {idx}")
@@ -266,12 +256,9 @@ def fill_excel_data(input_file):
         if not date_int:
             continue
             
-        # Extract target offset dates (날자.1 to 날자.5)
         dt_ints = {}
         for offset, col_name in [(1, "날자.1"), (2, "날자.2"), (3, "날자.3"), (4, "날자.4"), (5, "날자.5")]:
             if col_name in row and not pd.isna(row[col_name]):
-                 # use the *current* context year for these lookaheads.
-                 # (simplification: assume they are purely lookaheads within the same/next month)
                  dt_val, _, _ = parse_date(row[col_name], current_year)
                  dt_ints[offset] = dt_val
 
@@ -281,120 +268,53 @@ def fill_excel_data(input_file):
             logger.warning(f"Stock map Code not found for '{stock_name}'. Skipping.")
             continue
             
-        daishin_code = f"A{raw_code}"
+        # We fetch Kiwoom regular data for all. If ATS, we fetch it with _NX flag. 
+        # But Daishin cache and info fetch has been removed. 
+        # Since the user requested "Kiwoom unified source", we use clean_cd.
+        clean_cd = raw_code
+        logger.info(f"Target Row {idx} [{date_int}] - {stock_name} ({clean_cd}) - Needs filling.")
         
-        logger.info(f"Target Row {idx} [{date_int}] - {stock_name} ({daishin_code}) - Needs filling.")
-        
-        # 1-1. Fill Company Info (MarketCap, Sector, ATS, Market) for EVERY row
-        info_data = company_info_cache.get(daishin_code)
-        
-        # Fallback to individual fetch if it failed in batch
-        if not info_data:
-            info_data = fetch_daishin_info(daishin_code)
-            if info_data:
-                company_info_cache[daishin_code] = info_data # 캐시에 저장하여 다음 동일 종목에서 재사용
-                
-        if info_data:
-            if "(억원)" in df.columns:
-                df.at[idx, "(억원)"] = info_data.get("MarketCap")
-            if "업종" in df.columns:
-                sector_val = info_data.get("Sector")
-                if isinstance(sector_val, str):
-                    # 불필요한 거래소 정보 접두어 제거 (예: '코스닥 기계' -> '기계')
-                    sector_val = re.sub(r'^(?:코스피|코스닥|코넥스|KOSPI|KOSDAQ)\s*', '', sector_val).strip()
-                df.at[idx, "업종"] = sector_val
-            
-            # Set MarketType (usually E column, 'Unnamed: 4')
-            if "Unnamed: 4" in df.columns:
-                df.at[idx, "Unnamed: 4"] = info_data.get("MarketType")
-                
-            # ATS (F column) might be missing a header or we add it explicitly.
-            if "대체거래소" not in df.columns:
-                df.insert(5, "대체거래소", "") # Insert at F (index 5)
-            df.at[idx, "대체거래소"] = info_data.get("ATS_Nextrade")
-
-        # NXT 종목 판별 (Y/N)
-        ats_val = str(df.at[idx, "대체거래소"]).strip().upper()
-
-        # 1-2. Fetch Minute Chart Data (from cache or API)
         dates_needed = [date_int] + [dt for dt in dt_ints.values() if dt]
         min_date = min(dates_needed)
         max_date = max(dates_needed)
         
-        if daishin_code not in stock_range_cache:
-            stock_range_cache[daishin_code] = {"min": 99999999, "max": 0}
+        if clean_cd not in stock_range_cache:
+            stock_range_cache[clean_cd] = {"min": 99999999, "max": 0}
             
-        checked_min = stock_range_cache[daishin_code]["min"]
-        checked_max = stock_range_cache[daishin_code]["max"]
+        checked_min = stock_range_cache[clean_cd]["min"]
+        checked_max = stock_range_cache[clean_cd]["max"]
         
         needs_fetch = False
-        if daishin_code not in stock_data_cache or min_date < checked_min or max_date > checked_max:
+        if clean_cd not in stock_data_cache or min_date < checked_min or max_date > checked_max:
             needs_fetch = True
             
         if needs_fetch:
-             # Pad max_date by ~7 days to ensure consecutive rows in the same spreadsheet are covered
-             try:
-                 max_dt = datetime.strptime(str(max_date), "%Y%m%d")
-                 from datetime import timedelta
-                 padded_max_dt = max_dt + timedelta(days=7)
-                 safe_base_date = int(padded_max_dt.strftime("%Y%m%d"))
-             except Exception:
-                 safe_base_date = max_date
+            try:
+                max_dt = datetime.strptime(str(max_date), "%Y%m%d")
+                from datetime import timedelta
+                padded_max_dt = max_dt + timedelta(days=7)
+                safe_base_date = int(padded_max_dt.strftime("%Y%m%d"))
+            except Exception:
+                safe_base_date = max_date
                  
-             is_nxt = (ats_val == "Y")
-             data_source = "kiwoom" if is_nxt else "daishin"
-             
-             if is_nxt:
-                 fetched_data = fetch_kiwoom_minute_data(daishin_code, required_date_int=min_date, is_nxt=is_nxt, base_date_int=safe_base_date)
+            # Query Kiwoom directly.
+            # We first try to fetch with _NX flag as fallback if standard returns nothing.
+            fetched_data = fetch_kiwoom_minute_data(clean_cd, required_date_int=min_date, is_nxt=False, base_date_int=safe_base_date)
+            
+            if not fetched_data:
+                logger.info(f"Row {idx}: No data for standard {clean_cd}. Trying _NX fallback.")
+                fetched_data = fetch_kiwoom_minute_data(clean_cd, required_date_int=min_date, is_nxt=True, base_date_int=safe_base_date)
+                
+            if fetched_data:
+                stock_data_cache[clean_cd] = fetched_data
+            else:
+                stock_data_cache[clean_cd] = [] 
                  
-                 # [요구사항 2] 8시 분봉 유효성 검증 → 대신증권 9시 폴백
-                 # 데이터 일관성 원칙: 한 행에는 하나의 API 소스만 사용
-                 # 더미 데이터 감지: 대체거래소 미상장 시절 time=0, open=0, close=0 레코드 대응
-                 need_daishin_fallback = False
+            stock_range_cache[clean_cd]["min"] = min(stock_range_cache[clean_cd]["min"], min_date)
+            stock_range_cache[clean_cd]["max"] = max(stock_range_cache[clean_cd]["max"], max_date)
                  
-                 if not fetched_data:
-                     # [버그수정] 키움 API가 빈 데이터를 반환한 경우에도 대신증권 폴백
-                     logger.info(f"Row {idx}: 키움 NX 데이터 없음(빈 응답). 대신증권 9시 분봉으로 폴백.")
-                     need_daishin_fallback = True
-                 elif 1 in dt_ints:
-                     day_records = [r for r in fetched_data if int(r['date']) == dt_ints[1]]
-                     if day_records:
-                         first_time = min(int(r['time']) for r in day_records)
-                         # 더미 레코드 검증: 모든 레코드의 open/close가 0이면 유효하지 않은 데이터
-                         is_dummy = all(int(r.get('open', 0)) == 0 and int(r.get('close', 0)) == 0 for r in day_records)
-                         if is_dummy or first_time >= 850:
-                             reason = "더미 데이터(open=close=0)" if is_dummy else f"8시 분봉 미존재(first={first_time})"
-                             logger.info(f"Row {idx}: {reason}. 대신증권 9시 분봉으로 폴백.")
-                             need_daishin_fallback = True
-                     else:
-                         # D+1 날짜의 레코드가 아예 없는 경우도 폴백
-                         logger.info(f"Row {idx}: 키움 NX 데이터에 D+1({dt_ints[1]}) 레코드 없음. 대신증권 폴백.")
-                         need_daishin_fallback = True
-                 
-                 if need_daishin_fallback:
-                     fetched_data = fetch_daishin_data(daishin_code, required_date_int=min_date)
-                     if fetched_data:
-                         fetched_data = normalize_daishin_timestamps(fetched_data)
-                     data_source = "daishin"
-             else:
-                 fetched_data = fetch_daishin_data(daishin_code, required_date_int=min_date)
-                 # [요구사항 4] 대신증권 타임스탬프 -1분 정규화 (봉 시작 시점으로)
-                 if fetched_data:
-                     fetched_data = normalize_daishin_timestamps(fetched_data)
-                 
-             if fetched_data:
-                 stock_data_cache[daishin_code] = fetched_data
-             else:
-                 stock_data_cache[daishin_code] = [] # Mark as failed/empty to avoid re-spamming API
-                 
-             # Update checked range so we don't spam if it failed or already fetched
-             stock_range_cache[daishin_code]["min"] = min(stock_range_cache[daishin_code]["min"], min_date)
-             stock_range_cache[daishin_code]["max"] = max(stock_range_cache[daishin_code]["max"], max_date)
-                 
-        minute_data = stock_data_cache[daishin_code]
+        minute_data = stock_data_cache[clean_cd]
         
-        # [버그수정] 나스닥 종가는 분봉 데이터 유무와 무관하게 항상 기록
-        # (나스닥 종가는 외부 데이터이므로 분봉 데이터 실패와 독립적)
         nasdaq_col = "나스닥종가%" if "나스닥종가%" in df.columns else "나스닥종가"
         if 1 in dt_ints:
             nasdaq_close = fetch_nasdaq_close(dt_ints[1])
@@ -407,26 +327,14 @@ def fill_excel_data(input_file):
             logger.warning(f"No Data downloaded for {stock_name}. Cannot fill row {idx}.")
             continue
             
-        # 2. Base Time 결정 로직
-        # 10시 시작 검사: 보통 컬럼 6(G열)에 입력되므로 전체 row 값을 확인
-        is_10_am_start = False
-        for val in row.values:
-            if isinstance(val, str) and "10시시작" in val.replace(" ", ""):
-                is_10_am_start = True
-                break
+        # Detect Base Time automatically based on D+1 logic or D-day logic
+        detect_day_int = dt_ints[1] if 1 in dt_ints else date_int
+        day_records = [r for r in minute_data if int(r['date']) == detect_day_int]
+        base_time, time_label = detect_base_time(sorted(day_records, key=lambda x: int(x['time'])))
         
-        base_time = 900 # 기본 KRX 시작시간 (09:00)
-        
-        if is_10_am_start:
-            base_time = 1000 # 10:00 수능 등 지연개장
-        elif ats_val == "Y":
-            # 폴백으로 대신증권을 쓴 경우 base_time은 900 유지
-            if data_source == "kiwoom":
-                base_time = 800  # 08:00 NXT 오픈 (키움 데이터 사용 시)
-            else:
-                base_time = 900  # 대신증권 폴백 시 9시 기준
+        # Write the detected time label
+        df.at[idx, "시작시간"] = time_label
 
-        # 4. Process D-day (A column date)
         if date_int:
              d0_data = extract_daily_ohlc(minute_data, date_int)
              if d0_data:
@@ -435,11 +343,9 @@ def fill_excel_data(input_file):
                  if "저가" in df.columns: df.at[idx, "저가"] = d0_data["저가"]
                  if "종가" in df.columns: df.at[idx, "종가"] = d0_data["종가"]
 
-        # 4-1. Process NXT (which uses D+1 date, but only '종목.1' is strictly necessary here since OHLC is handled below)
         if 1 in dt_ints:
-             if "종목.1" in df.columns: df.at[idx, "종목.1"] = daishin_code
+             if "종목.1" in df.columns: df.at[idx, "종목.1"] = clean_cd
                  
-        # 5. Process Minute Data and Daily Data for D+1 (날자.1)
         if 1 in dt_ints:
             extracted = extract_time_points(minute_data, dt_ints[1], base_time)
             if extracted:
@@ -447,14 +353,12 @@ def fill_excel_data(input_file):
                     if k in df.columns:
                         df.at[idx, k] = v
                         
-            # D+1 Daily data is mapped to "고가.1", "저가", "종가.1"
             d1_data = extract_daily_ohlc(minute_data, dt_ints[1])
             if d1_data:
                 if "고가.1" in df.columns: df.at[idx, "고가.1"] = d1_data["고가"]
                 if "저가" in df.columns: df.at[idx, "저가"] = d1_data["저가"]
                 if "종가.1" in df.columns: df.at[idx, "종가.1"] = d1_data["종가"]
                 
-        # 4. Process D+2 (날자.2) -> 시가.1, 고가.2, 저가.1, 종가.2
         if 2 in dt_ints:
              d2_data = extract_daily_ohlc(minute_data, dt_ints[2])
              if d2_data:
@@ -463,7 +367,6 @@ def fill_excel_data(input_file):
                  if "저가.1" in df.columns: df.at[idx, "저가.1"] = d2_data["저가"]
                  if "종가.2" in df.columns: df.at[idx, "종가.2"] = d2_data["종가"]
                  
-        # 5. Process D+3 (날자.3) -> 시가.2, 고가.3, 저가.2, 종가.3
         if 3 in dt_ints:
              d3_data = extract_daily_ohlc(minute_data, dt_ints[3])
              if d3_data:
@@ -472,7 +375,6 @@ def fill_excel_data(input_file):
                  if "저가.2" in df.columns: df.at[idx, "저가.2"] = d3_data["저가"]
                  if "종가.3" in df.columns: df.at[idx, "종가.3"] = d3_data["종가"]
 
-        # 6. Process D+4 (날자.4) -> 시가.3, 고가.4, 저가.3, 종가.4
         if 4 in dt_ints:
              d4_data = extract_daily_ohlc(minute_data, dt_ints[4])
              if d4_data:
@@ -481,7 +383,6 @@ def fill_excel_data(input_file):
                  if "저가.3" in df.columns: df.at[idx, "저가.3"] = d4_data["저가"]
                  if "종가.4" in df.columns: df.at[idx, "종가.4"] = d4_data["종가"]
                  
-        # 7. Process D+5 (날자.5) -> 시가.4, 고가.5, 저가.4, 종가.5
         if 5 in dt_ints:
              d5_data = extract_daily_ohlc(minute_data, dt_ints[5])
              if d5_data:
@@ -492,7 +393,6 @@ def fill_excel_data(input_file):
             
         modified_count += 1
             
-    # Save Results
     output_excel = os.path.splitext(input_file)[0] + "_kiwoom_filled.xlsx"
     output_md = os.path.splitext(input_file)[0] + "_kiwoom_filled.md"
     
@@ -500,7 +400,6 @@ def fill_excel_data(input_file):
         df.to_excel(output_excel, index=False)
         logger.info(f"Saved filled Excel to {output_excel}")
         
-        # Also save MD
         markdown_table = df.to_markdown(index=False)
         with open(output_md, 'w', encoding='utf-8') as f:
             f.write(markdown_table)

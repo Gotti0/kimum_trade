@@ -134,6 +134,10 @@ def fetch_kiwoom_minute_data(stk_cd: str, required_date_int: int = None, is_nxt:
             "base_dt": str(initial_base_dt)
         }
         
+        # 모의투자가 않을 경우 통합(SOR) 또는 NXT 관련 파라미터 적용
+        if not is_mock:
+            payload["dmst_stex_tp"] = "NXT" if is_nxt else "SOR"
+        
         if cont_yn == "Y" and next_key:
             headers["cont-yn"] = "Y"
             headers["next-key"] = next_key
